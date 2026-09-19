@@ -44,7 +44,7 @@ pub async fn ingest(
     Json(events): Json<Vec<armin_ingest::EventRecord>>,
 ) -> Response {
     let mut queued = 0usize;
-    let mut captured = 0usize;
+    let captured = 0usize;
     for event in events {
         state.metrics.events_ingested.fetch_add(1, Ordering::Relaxed);
         state.register_session(&event.session_id).await;
@@ -53,6 +53,7 @@ pub async fn ingest(
         if event.event_kind == EventKind::ToolCall {
             state.metrics.tool_events.fetch_add(1, Ordering::Relaxed);
             let _ = crate::deterministic::is_tool_event(&event);
+            crate::toolclass::record_tool_event(&state.scratch, &event).await;
         } else if let Some(tx) = &state.ingest_tx {
             if tx.send(event).is_ok() {
                 queued += 1;
@@ -79,10 +80,53 @@ pub async fn ingest_one(
     .await
 }
 
+// ── Import (AGENTS.md / CLAUDE.md cold start) ────────────────────────────────
+
+pub async fn import(
+    State(state): State<EngineState>,
+    Json(req): Json<crate::import::ImportRequest>,
+) -> Response {
+    let resp = crate::import::handle_import(&state.graph, req).await;
+    state
+        .metrics
+        .nodes_added
+        .fetch_add(resp.imported as u64, Ordering::Relaxed);
+    Json(resp).into_response()
+}
+
+// ── Status page ───────────────────────────────────────────────────────────────
+
+pub async fn ui() -> impl IntoResponse {
+    axum::response::Html(include_str!("../ui/index.html"))
+}
+
+pub async fn root_redirect() -> impl IntoResponse {
+    axum::response::Redirect::temporary("/ui")
+}
+
 // ── Reasoning-state brief ────────────────────────────────────────────────────
 
-pub async fn brief(State(state): State<EngineState>) -> impl IntoResponse {
-    let brief = crate::brief::build_brief(&state).await;
+#[derive(Deserialize)]
+pub struct BriefParams {
+    /// Comma-separated file paths the agent is working on — scopes the
+    /// "Binding here" section to rules/decisions covering these files.
+    pub files: Option<String>,
+}
+
+pub async fn brief(
+    State(state): State<EngineState>,
+    Query(params): Query<BriefParams>,
+) -> impl IntoResponse {
+    let files: Vec<String> = params
+        .files
+        .map(|f| {
+            f.split(',')
+                .map(|p| p.trim().to_string())
+                .filter(|p| !p.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    let brief = crate::brief::build_brief(&state, &files).await;
     Json(json!({ "brief": brief, "empty": brief.is_empty() }))
 }
 
@@ -319,6 +363,7 @@ pub async fn invalidate(
     State(state): State<EngineState>,
     Json(req): Json<InvalidateRequest>,
 ) -> Response {
+    tracing::debug!(node = %req.node_id, rationale = %req.rationale, "invalidate");
     match state.graph.invalidate_node(&req.node_id).await {
         Ok(()) => {
             Json(json!({
@@ -421,7 +466,8 @@ pub async fn query(
 
 pub async fn debt(State(state): State<EngineState>) -> impl IntoResponse {
     let session_idx = state.current_session_idx.load(Ordering::SeqCst);
-    let report = state.graph.compute_debt_report(session_idx).await;
+    let scratch = state.scratch.snapshot(&state.current_session_id().await).await;
+    let report = state.graph.compute_debt_report_with(session_idx, Some(&scratch)).await;
     // Remember this report so the next /summary can express a delta.
     *state.prior_debt.write().await = Some(report.clone());
     Json(report)

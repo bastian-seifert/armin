@@ -56,7 +56,7 @@ impl Stage for CompressionStage {
         };
 
         // Every N events, compress the oldest events into the summary
-        if counter % self.config.interval == 0 && ctx.event_history.len() >= self.config.interval {
+        if counter.is_multiple_of(self.config.interval) && ctx.event_history.len() >= self.config.interval {
             let events_to_compress: Vec<&armin_extraction::EventRecord> = ctx.event_history
                 .iter()
                 .take(self.config.interval)

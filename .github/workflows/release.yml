@@ -1,0 +1,51 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  binaries:
+    name: Build engine (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            archive: armin-engine-linux-x64
+          - target: x86_64-apple-darwin
+            os: macos-13
+            archive: armin-engine-macos-x64
+          - target: aarch64-apple-darwin
+            os: macos-14
+            archive: armin-engine-macos-arm64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: armin-core
+      - name: build
+        working-directory: armin-core
+        run: cargo build --release -p armin-engine --target ${{ matrix.target }}
+      - name: package
+        run: |
+          dir="${{ matrix.archive }}"
+          mkdir "$dir"
+          cp "armin-core/target/${{ matrix.target }}/release/armin-engine" "$dir/"
+          cp README.md LICENSE "$dir/"
+          tar czf "$dir.tar.gz" "$dir"
+          shasum -a 256 "$dir.tar.gz" > "$dir.tar.gz.sha256"
+      - name: upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ matrix.archive }}.tar.gz
+            ${{ matrix.archive }}.tar.gz.sha256

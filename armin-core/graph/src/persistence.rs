@@ -111,7 +111,7 @@ impl DbBackend {
 
     fn append_node_order_at(&self, idx: u64, node_id: &str) -> Result<()> {
         let key = idx.to_be_bytes();
-        self.order.insert(&key, serialize(node_id)?)?;
+        self.order.insert(key, serialize(node_id)?)?;
         if self.meta.get(KEY_SCHEMA_VERSION)?.is_none() {
             self.meta
                 .insert(KEY_SCHEMA_VERSION, &SCHEMA_VERSION.to_le_bytes())?;

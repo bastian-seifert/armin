@@ -16,7 +16,7 @@ use crate::risks;
 use crate::summary;
 use crate::types::{
     ArgumentEdge, ArgumentNode, CommunityReport, DebtReport, Decision, ExecutiveSummary, GraphDiff,
-    GraphSnapshot, QueryResult, Risk,
+    GraphSnapshot, QueryResult, Risk, ScratchSnapshot,
 };
 
 pub type GraphIx = u32;
@@ -439,12 +439,22 @@ impl GraphStore {
     }
 
     pub async fn compute_debt_report(&self, current_session_idx: usize) -> DebtReport {
-        let inner = self.inner.read().await;
+        self.compute_debt_report_with(current_session_idx, None).await
+    }
+
+    /// Debt including cross-layer detectors fed by the session scratch
+    /// (recent edits, verification outcomes).
+    pub async fn compute_debt_report_with(
+        &self,
+        current_session_idx: usize,
+        scratch: Option<&ScratchSnapshot>,
+    ) -> DebtReport {
         let ts = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs_f64();
-        compute_debt(&inner, current_session_idx, ts)
+        let inner = self.inner.read().await;
+        compute_debt(&inner, current_session_idx, ts, scratch)
     }
 
     pub async fn compute_community_report(&self) -> CommunityReport {

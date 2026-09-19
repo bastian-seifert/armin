@@ -3,7 +3,7 @@ import type { ArgumentNode, NodeType } from '../../types'
 import { useGraph } from '../../context/GraphContext'
 import { NODE_COLORS } from '../../lib/colors'
 
-const CATEGORY_ORDER: NodeType[] = ['Decision', 'OpenItem']
+const CATEGORY_ORDER: NodeType[] = ['Decision', 'Rule', 'OpenItem']
 
 interface Props {
   selectedNodeId: string | null
@@ -18,6 +18,7 @@ export function NodeMenu({ selectedNodeId, onSelectNode }: Props) {
   const grouped = useMemo(() => {
     const map: Record<NodeType, ArgumentNode[]> = {
       Decision: [],
+      Rule: [],
       OpenItem: [],
     }
     for (const node of nodes.values()) {

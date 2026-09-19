@@ -103,7 +103,7 @@ pub async fn agent_decision_handler(
         }
     }
 
-    broadcast_event(&state, &[node.clone()], &edges);
+    broadcast_event(&state, std::slice::from_ref(&node), &edges);
 
     Json(AgentWriteResponse {
         node_id,
@@ -138,7 +138,7 @@ pub async fn agent_question_handler(
     };
 
     state.graph.add_node(node.clone()).await;
-    broadcast_event(&state, &[node.clone()], &[]);
+    broadcast_event(&state, std::slice::from_ref(&node), &[]);
 
     Json(AgentWriteResponse {
         node_id,
@@ -153,7 +153,7 @@ pub async fn agent_resolve_handler(
 ) -> impl IntoResponse {
     match state.graph.resolve_question(&req.question_id, &req.resolver_node_id, &req.reasoning).await {
         Ok(edge) => {
-            broadcast_event(&state, &[], &[edge.clone()]);
+            broadcast_event(&state, &[], std::slice::from_ref(&edge));
             Json(AgentWriteResponse {
                 node_id: req.question_id.clone(),
                 node_label: "question_resolved".to_string(),
@@ -204,7 +204,7 @@ pub async fn agent_invalidate_handler(
             };
             let _ = state.graph.add_edge(edge.clone()).await;
 
-            broadcast_event(&state, &[claim.clone()], &[edge.clone()]);
+            broadcast_event(&state, std::slice::from_ref(&claim), std::slice::from_ref(&edge));
 
             Json(AgentWriteResponse {
                 node_id: req.node_id,

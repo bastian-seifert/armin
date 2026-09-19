@@ -19,7 +19,7 @@ pub use types::{
     AgentWriteResponse, ArgumentEdge, ArgumentNode, ChangedNode, Community, CommunityReport,
     DebtDelta, DebtItem, DebtReport, Decision, EdgeProvenance, EdgeType, ExecutiveSummary,
     ExtractionResult, GraphDiff, GraphSnapshot, NodeStatus, NodeType, QueryResult, Risk,
-    SurprisingConnection,
+    ScratchCheck, ScratchEdit, ScratchSnapshot, SurprisingConnection,
 };
 pub use utils::{session_id_at_index, session_index, session_short_name};
 

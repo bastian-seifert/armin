@@ -21,7 +21,7 @@ pub fn compute_summary(
         .unwrap_or_default()
         .as_secs_f64();
 
-    let current_debt = compute_debt(inner, current_session_idx, now);
+    let current_debt = compute_debt(inner, current_session_idx, now, None);
 
     let debt_delta = match prior_debt {
         Some(prior) => compute_debt_delta(&current_debt, prior),

@@ -21,7 +21,7 @@ pub fn compute_risks(
         .unwrap_or_default()
         .as_secs_f64();
 
-    let debt = compute_debt(inner, current_session_idx, now);
+    let debt = compute_debt(inner, current_session_idx, now, None);
     let mut seen_nodes = HashSet::new();
     let mut results = Vec::new();
 
@@ -46,8 +46,7 @@ pub fn compute_risks(
                 None => 0,
             };
             let impact = ((downstream as f32).min(4.0) / 4.0 * 60.0 + recency_bonus as f32)
-                .min(100.0)
-                .max(5.0);
+                .clamp(5.0, 100.0);
 
             let validation_status = match item.debt_type.as_str() {
                 "ActiveContradiction" => "Unvalidated",

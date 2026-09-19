@@ -516,8 +516,52 @@ const ArminPlugin: Plugin = async (ctx) => {
   const api = new EngineClient(sidecar)
   const capture = new Capture(api)
 
+  if (sidecar.port) {
+    log(`reasoning-state UI: http://127.0.0.1:${sidecar.port}/ui`)
+  }
+
+  // ── Cold start: import AGENTS.md / CLAUDE.md into an empty graph ──────
+  // Deterministic parse on the engine side (content-hash IDs, idempotent).
+  // No LLM, no network beyond the local sidecar.
+  void (async () => {
+    try {
+      const snap = await api.get<{ nodes: unknown[] }>("/snapshot")
+      if (!snap || (snap.nodes?.length ?? 0) > 0) return
+      const fs = await import("node:fs")
+      const doc = ["AGENTS.md", "CLAUDE.md"]
+        .map((f) => `${ctx.worktree}/${f}`)
+        .find((p) => fs.existsSync(p))
+      if (!doc) return
+      const content = fs.readFileSync(doc, "utf-8")
+      const res = await api.post<{ found: number; imported: number; rules: number }>(
+        "/import",
+        { content, session_id: `import-${Date.now()}` },
+      )
+      if (res && res.imported > 0) {
+        log(
+          `imported ${doc}: ${res.imported} node(s) ` +
+            `(${res.rules} rule(s), ${res.found - res.rules} decision/open item(s))`,
+        )
+      }
+    } catch {
+      // Import is best-effort — never block the session.
+    }
+  })()
+
   // Last seen text per streaming part ID — capture each text part once.
   const lastPartText = new Map<string, string>()
+  // Recently edited files (ring buffer) — scopes the brief's "Binding here"
+  // section to what the agent is actually working on.
+  const recentFiles: string[] = []
+  const rememberFiles = (files: string[]) => {
+    for (const f of files) {
+      const i = recentFiles.indexOf(f)
+      if (i >= 0) recentFiles.splice(i, 1)
+      recentFiles.unshift(f)
+    }
+    if (recentFiles.length > 20) recentFiles.length = 20
+  }
+  const briefFooter = (process.env.ARMIN_BRIEF_FOOTER ?? cfgStr("briefFooter", "ARMIN_BRIEF_FOOTER")) === "1"
   // Last model pushed to the engine (for "session" model following).
   let lastPushedModel: string | undefined
   const ingestAssistantText = (sessionID: string, partID: string, text: string) => {
@@ -535,11 +579,33 @@ const ArminPlugin: Plugin = async (ctx) => {
 
     // ── Passive capture (no LLM, no added latency) ─────────────────────
     "tool.execute.after": async (input, output) => {
+      const files = extractFiles(input.args)
+      rememberFiles(files)
       const text = `${input.tool} ${output.title ?? ""}: ${truncate(output.output ?? "", 400)}`
       capture.ingest(input.sessionID, "tool_call", "agent", text, {
         toolName: input.tool,
-        files: extractFiles(input.args),
+        files,
       })
+      // Optional (off by default): append the scoped memory as a footer to
+      // mutating tool outputs — the tool result is model context at exactly
+      // the moment a remembered constraint matters.
+      if (briefFooter && files.length > 0) {
+        const filesParam = encodeURIComponent(recentFiles.slice(0, 10).join(","))
+        const res = await api.get<{ brief: string; empty: boolean }>(
+          `/state/brief?files=${filesParam}`,
+        )
+        if (res && !res.empty && res.brief.includes("Binding here")) {
+          const binding = res.brief
+            .split("Binding here")[1]
+            ?.split("\n")
+            .filter((l) => l.startsWith("- "))
+            .slice(0, 3)
+            .join("\n")
+          if (binding) {
+            output.output = `${output.output ?? ""}\n\n[ARMIN — settled decisions/rules for these files]\n${binding}`
+          }
+        }
+      }
     },
 
     event: async ({ event }) => {
@@ -574,11 +640,18 @@ const ArminPlugin: Plugin = async (ctx) => {
     // ── Push: zero-cost reasoning-state reminder on every turn ────────
     "experimental.chat.system.transform": async (_input, output) => {
       try {
-        const res = await api.get<{ brief: string; empty: boolean }>("/state/brief")
+        const filesParam =
+          recentFiles.length > 0
+            ? `?files=${encodeURIComponent(recentFiles.slice(0, 10).join(","))}`
+            : ""
+        const res = await api.get<{ brief: string; empty: boolean }>(
+          `/state/brief${filesParam}`,
+        )
         if (res && !res.empty && res.brief) {
           output.system.push(
-            "Reasoning state (ARMIN): tracked decisions, open questions, and contradictions for this session. Use query_graph for detail.\n" +
-              res.brief,
+            "Reasoning state (ARMIN): tracked decisions, rules, and open items. " +
+              "Use query_graph for detail. If a new request conflicts with a decision or rule " +
+              "below, say so explicitly before deviating.\n" + res.brief,
           )
         }
       } catch {

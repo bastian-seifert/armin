@@ -13,7 +13,7 @@ import {
   type BBox,
 } from '../lib/zoom'
 
-const LANE_ORDER: NodeType[] = ['Decision', 'OpenItem']
+const LANE_ORDER: NodeType[] = ['Decision', 'Rule', 'OpenItem']
 const MARGIN = { top: 50, right: 30, bottom: 20, left: 90 }
 const NODE_R = 8
 const STAGGER = NODE_R * 2 + 4

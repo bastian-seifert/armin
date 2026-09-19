@@ -196,15 +196,42 @@ fn engine_sidecar_end_to_end() {
         assert!(brief_text.contains("Decisions"));
         assert!(brief_text.contains("Open items"));
 
+        // The tool event was an edit → scratch flags an unverified change.
+        assert!(brief_text.contains("Unverified edits"), "brief: {brief_text}");
+
+        // A passing test run over the same file clears the warning.
+        let resp = post(
+            &engine,
+            "/ingest",
+            json!([{
+                "id": "e3",
+                "session_id": "s1",
+                "agent_role": "agent",
+                "start_time": 3.0,
+                "end_time": 4.0,
+                "text": "Bash cargo test: 47 passed, 0 failed",
+                "event_kind": "tool_call",
+                "tool_name": "bash",
+                "files": ["src/auth.rs"],
+            }]),
+        );
+        let brief = get(&engine, "/state/brief");
+        let brief_text = brief["brief"].as_str().unwrap();
+        assert!(
+            !brief_text.contains("Unverified edits"),
+            "check should clear the warning, brief: {brief_text}"
+        );
+
         // Deterministic query finds the decision.
         let query = post(&engine, "/query", json!({ "question": "Why JWT auth?" }));
         assert!(!query["trace"].as_array().unwrap().is_empty());
 
-        // Metrics reflect what happened. Tool events are counted but produce
-        // no nodes in v2; the two agent writes are the only nodes.
+        // Metrics reflect what happened. Tool events are counted (2: the
+        // edit and the test run) but produce no nodes in v2; the two agent
+        // writes are the only nodes.
         let metrics = get(&engine, "/metrics");
-        assert_eq!(metrics["events_ingested"], 2);
-        assert_eq!(metrics["tool_events"], 1);
+        assert_eq!(metrics["events_ingested"], 3);
+        assert_eq!(metrics["tool_events"], 2);
         assert_eq!(metrics["deterministic_nodes"], 0);
         assert_eq!(metrics["agent_writes"], 2);
         assert_eq!(metrics["nodes_added"], 2);

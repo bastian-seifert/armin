@@ -61,10 +61,11 @@ A standalone **`armin-server`** (same graph, event stream + WebSocket + React fr
 ## Quickstart: opencode middleware (recommended)
 
 ```bash
-# 1. Build + install the sidecar (once per machine)
-scripts/build-engine.sh          # → ~/.local/bin/armin-engine
+# 1. Install: build the sidecar, register the plugin globally, verify.
+scripts/install.sh               # needs cargo; or grab a binary from Releases
+                                 # and re-run with --skip-build
 
-# 2. Enable it in any project (opt-in, per environment)
+# 2. Enable it per environment (the plugin itself is global, the engine opt-in)
 export ARMIN_ENABLED=1
 # optional knobs:
 # ARMIN_ENGINE_BIN=~/.local/bin/armin-engine
@@ -76,9 +77,15 @@ export ARMIN_ENABLED=1
 # ARMIN_DEBUG=1                  verbose plugin logging
 ```
 
-Cost/latency model: tool calls are captured with **zero** LLM calls; prose is batched (one cheap call per 15s window by default); the brief is computed in Rust (<10ms). The agent's turns never wait on the graph. Without any API key the engine still runs in deterministic-only mode.
+First run in a project: if an `AGENTS.md` or `CLAUDE.md` exists, ARMIN imports it into the graph as `Rule`/`Decision`/`OpenItem` nodes — you get a useful brief on session 1, before any extraction has run.
 
 **Reasoning survives compaction**: the plugin injects decisions and open items into the compaction prompt, so a compacted session retains its "why".
+
+**Inspect the graph**: the engine serves a live status page at `http://127.0.0.1:<port>/ui` (the plugin logs the URL at startup with `ARMIN_DEBUG=1`).
+
+Cost/latency model: tool calls are captured with **zero** LLM calls; prose is batched (one cheap call per 15s window by default); the brief is computed in Rust (<10ms). The agent's turns never wait on the graph. Without any API key you still get capture, unverified-edit/failing-check warnings and agent writes — everything else needs extraction.
+
+**Editing with memory**: the brief gains a "Binding here" section — decisions and rules scoped to the files you have been editing — and a standing instruction: if a new request conflicts with a remembered decision, say so explicitly before deviating.
 
 ---
 

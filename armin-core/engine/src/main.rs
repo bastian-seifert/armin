@@ -1,6 +1,8 @@
 mod answer;
 mod brief;
 mod deterministic;
+pub mod import;
+pub mod toolclass;
 mod metrics;
 mod routes;
 mod state;
@@ -24,7 +26,7 @@ use state::{EngineConfig, ExtractionMode};
 use worker::run as run_worker;
 
 #[derive(Parser)]
-#[command(name = "armin-engine")]
+#[command(name = "armin-engine", version)]
 struct Args {
     /// Port to listen on (0 = auto-assign; the chosen port is printed to
     /// stdout as ARMIN_PORT=<port> for the parent process).
@@ -154,9 +156,11 @@ async fn main() -> anyhow::Result<()> {
         extractor: extractor.clone(),
         jev: jev.clone(),
         ingest_tx: (extractor.is_some() || jev.is_some()).then_some(ingest_tx),
+        scratch: toolclass::Scratch::new(),
         event_log: Arc::new(RwLock::new(std::collections::VecDeque::with_capacity(20))),
         sessions: Arc::new(RwLock::new(Vec::new())),
         current_session_idx: Arc::new(AtomicUsize::new(0)),
+        current_session_id: Arc::new(RwLock::new(String::new())),
         prior_debt: Arc::new(RwLock::new(None)),
         metrics: Arc::new(metrics::Metrics::default()),
         config,
@@ -181,6 +185,9 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/v1/ingest", post(routes::ingest))
         .route("/api/v1/ingest/event", post(routes::ingest_one))
         .route("/api/v1/state/brief", get(routes::brief))
+        .route("/api/v1/import", post(routes::import))
+        .route("/ui", get(routes::ui))
+        .route("/", get(routes::root_redirect))
         // ── Graph mutations ──
         .route("/api/v1/nodes", post(routes::add_node))
         .route("/api/v1/edges", post(routes::add_edge))

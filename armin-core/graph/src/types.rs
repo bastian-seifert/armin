@@ -2,39 +2,41 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-/// Durable knowledge node types (v2 taxonomy, minimal set).
+/// Durable knowledge node types (v2 taxonomy).
 ///
 /// The graph holds only knowledge that future sessions need to keep the
 /// codebase consistent. Episodic session reasoning is pipeline scratch, not
-/// graph content. This is the measured-minimum set (backtest + abtest):
+/// graph content. The measured-minimum set (backtest + abtest evidence):
 ///
 /// - `Decision` — was this decided before, and why? (the abtest payload)
 /// - `OpenItem` — what is known broken, unfinished, or unresolved?
 ///
-/// Planned extensions, deliberately NOT in the PoC (see data/backtest
-/// evaluation: Rule/Fact need gate tuning, Lesson never fires):
-/// `Rule` (binding conventions/constraints), `Fact` (verified gotchas),
-/// `Lesson` (tried-and-failed). Add the variant, the jev criterion, and a
-/// debt detector together.
+/// `Rule` (binding conventions, constraints, requirements) was re-added for
+/// deterministic paths — AGENTS.md/CLAUDE.md import and scoped-brief
+/// injection. It is NOT extracted from prose by jev (criteria untouched);
+/// prose-level Rule extraction is gated on a v2 gold set.
+///
+/// Future extensions, deliberately not extracted yet (see data/backtest
+/// evaluation: Fact needs a durability gate, Lesson never fires):
+/// `Fact` (verified gotchas), `Lesson` (tried-and-failed). Add the variant,
+/// the extraction criterion, and a debt detector together.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "PascalCase")]
 pub enum NodeType {
+    Rule,
     Decision,
     OpenItem,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "PascalCase")]
+#[derive(Default)]
 pub enum NodeStatus {
+    #[default]
     Active,
     Invalidated,
 }
 
-impl Default for NodeStatus {
-    fn default() -> Self {
-        Self::Active
-    }
-}
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "PascalCase")]
@@ -132,6 +134,37 @@ pub struct ArgumentEdge {
 pub struct ExtractionResult {
     pub new_nodes: Vec<ArgumentNode>,
     pub new_edges: Vec<ArgumentEdge>,
+}
+
+// ── Session scratch (episodic, never graph content) ───────────────────────────
+
+/// One mutating tool call (edit/write/...), recorded in session scratch.
+/// Feeds the cross-layer `UnverifiedChange` detector.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ScratchEdit {
+    pub event_id: String,
+    pub tool: String,
+    pub files: Vec<String>,
+    pub timestamp: f64,
+}
+
+/// One verification tool call (test/lint/build) with its outcome.
+/// Feeds the `FailedVerification` and `RuleViolation` detectors.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ScratchCheck {
+    pub event_id: String,
+    pub tool: String,
+    pub files: Vec<String>,
+    pub passed: bool,
+    pub timestamp: f64,
+}
+
+/// The scratch slice the debt detectors need, built per session by the
+/// engine. The graph stays durable-only; this is passed IN, never stored.
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+pub struct ScratchSnapshot {
+    pub edits: Vec<ScratchEdit>,
+    pub checks: Vec<ScratchCheck>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

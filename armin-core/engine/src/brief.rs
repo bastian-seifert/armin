@@ -17,7 +17,7 @@ const MAX_DECISIONS: usize = 6;
 /// Maximum characters of any single label/rationale.
 const MAX_TEXT: usize = 110;
 
-pub async fn build_brief(state: &EngineState) -> String {
+pub async fn build_brief(state: &EngineState, active_files: &[String]) -> String {
     let node_count = state.graph.node_count().await;
     if node_count == 0 {
         return String::new();
@@ -26,7 +26,12 @@ pub async fn build_brief(state: &EngineState) -> String {
     let session_idx = state
         .current_session_idx
         .load(std::sync::atomic::Ordering::SeqCst);
-    let debt = state.graph.compute_debt_report(session_idx).await;
+    let session_id = state.current_session_id().await;
+    let scratch = state.scratch.snapshot(&session_id).await;
+    let debt = state
+        .graph
+        .compute_debt_report_with(session_idx, Some(&scratch))
+        .await;
     let decisions = state.graph.extract_decisions(session_idx).await;
     let edges = state.graph.edge_count().await;
 
@@ -60,6 +65,22 @@ pub async fn build_brief(state: &EngineState) -> String {
         ));
     }
 
+    // Rules — binding constraints, always worth surfacing (they are few:
+    // imported or recorded, never prose-extracted).
+    let rules: Vec<armin_graph::ArgumentNode> = snapshot_nodes(state)
+        .await
+        .into_iter()
+        .filter(|n| n.node_type == armin_graph::NodeType::Rule)
+        .take(MAX_ITEMS)
+        .collect();
+    if !rules.is_empty() {
+        let lines: Vec<String> = rules
+            .iter()
+            .map(|n| format!("- {}", truncate(&n.label, MAX_TEXT)))
+            .collect();
+        sections.push(format!("Rules ({}):\n{}", rules.len(), lines.join("\n")));
+    }
+
     // Debt — open items are the one graph-internal debt signal.
     let open_items: Vec<&armin_graph::DebtItem> = debt
         .items
@@ -79,6 +100,84 @@ pub async fn build_brief(state: &EngineState) -> String {
         ));
     }
 
+    // Binding here: rules/decisions scoped to the files the agent is
+    // working on right now (nodes with file scope that intersect the
+    // request). Project-wide nodes (no files) live in the sections above.
+    if !active_files.is_empty() {
+        let snapshot = state.graph.snapshot().await;
+        let mut binding: Vec<&armin_graph::ArgumentNode> = snapshot
+            .nodes
+            .iter()
+            .filter(|n| {
+                !n.files.is_empty()
+                    && matches!(n.node_type, armin_graph::NodeType::Rule | armin_graph::NodeType::Decision)
+                    && n.files.iter().any(|f| {
+                        active_files.iter().any(|a| a == f || f.ends_with(a) || a.ends_with(f))
+                    })
+            })
+            .collect();
+        binding.sort_by_key(|n| match n.node_type {
+            armin_graph::NodeType::Rule => 0,
+            _ => 1,
+        });
+        binding.truncate(5);
+        if !binding.is_empty() {
+            let lines: Vec<String> = binding
+                .iter()
+                .map(|n| {
+                    format!(
+                        "- [{}] {}",
+                        if n.node_type == armin_graph::NodeType::Rule { "Rule" } else { "Decision" },
+                        truncate(&n.label, MAX_TEXT)
+                    )
+                })
+                .collect();
+            sections.push(format!(
+                "Binding here ({}):\n{}",
+                binding.len(),
+                lines.join("\n")
+            ));
+        }
+    }
+
+    // Cross-layer warnings: session activity vs the durable graph.
+    let is = |item: &armin_graph::DebtItem, kind: &str| item.debt_type.eq_ignore_ascii_case(kind);
+    let unverified: Vec<&armin_graph::DebtItem> = debt
+        .items
+        .iter()
+        .filter(|i| is(i, "UnverifiedChange"))
+        .collect();
+    if !unverified.is_empty() {
+        let lines: Vec<String> = unverified
+            .iter()
+            .take(MAX_ITEMS)
+            .map(|i| format!("- {}", truncate(&i.description, MAX_TEXT)))
+            .collect();
+        sections.push(format!(
+            "Unverified edits ({}):\n{}",
+            unverified.len(),
+            lines.join("\n")
+        ));
+    }
+
+    let failing: Vec<&armin_graph::DebtItem> = debt
+        .items
+        .iter()
+        .filter(|i| is(i, "FailedVerification") || is(i, "RuleViolation"))
+        .collect();
+    if !failing.is_empty() {
+        let lines: Vec<String> = failing
+            .iter()
+            .take(2)
+            .map(|i| format!("- {}", truncate(&i.description, MAX_TEXT)))
+            .collect();
+        sections.push(format!(
+            "Failing checks ({}):\n{}",
+            failing.len(),
+            lines.join("\n")
+        ));
+    }
+
     if sections.is_empty() {
         return String::new();
     }
@@ -87,6 +186,10 @@ pub async fn build_brief(state: &EngineState) -> String {
         "<reasoning-state nodes=\"{node_count}\" edges=\"{edges}\">\n{}\n</reasoning-state>",
         sections.join("\n")
     )
+}
+
+async fn snapshot_nodes(state: &EngineState) -> Vec<armin_graph::ArgumentNode> {
+    state.graph.snapshot().await.nodes
 }
 
 fn truncate(s: &str, max: usize) -> String {

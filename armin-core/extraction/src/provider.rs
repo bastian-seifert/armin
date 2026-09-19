@@ -70,8 +70,8 @@ fn json_max_tokens() -> u32 {
 /// budget hint (`budget_hint()`) so thoroughness is tunable without
 /// touching the providers.
 pub const JSON_MODE_INSTRUCTION: &str = r#"OUTPUT FORMAT (strict): respond with ONLY a raw JSON object — no markdown fences, no commentary, no reasoning before the JSON — matching exactly:
-{"new_nodes": [{"id": "<unique string>", "node_type": "<Claim|Evidence|Assumption|Question|Decision>", "label": "<max 12 words>", "description": "<ONE short sentence>", "event_id": "<the exact event id the node came from>", "agent_id": "<speaker>", "session_id": "<session id>", "timestamp": <number>, "confidence": <0.0-1.0>}], "new_edges": [{"id": "<unique string>", "edge_type": "<Supports|Contradicts|Refines|Resolves>", "source_node_id": "<node id>", "target_node_id": "<node id>", "reasoning": "<why, few words>", "timestamp": <number>}]}
-Each node must trace to exactly one event. When a new node answers a question from the graph context or another event in this batch, add a Resolves edge (source = answer node, target = question node). If no event has argumentative content, respond with {"new_nodes": [], "new_edges": []}."#;
+{"new_nodes": [{"id": "<unique string>", "node_type": "<Decision|Rule|OpenItem>", "label": "<max 12 words>", "description": "<ONE short sentence>", "event_id": "<the exact event id the node came from>", "agent_id": "<speaker>", "session_id": "<session id>", "timestamp": <number>, "confidence": <0.0-1.0>}], "new_edges": [{"id": "<unique string>", "edge_type": "<Supersedes|Refutes|Resolves|RelatesTo>", "source_node_id": "<node id>", "target_node_id": "<node id>", "reasoning": "<why, few words>", "timestamp": <number>}]}
+Only DURABLE knowledge that a future session needs: node_type Decision = a settled choice, plan, or commitment; Rule = a binding constraint, convention, or requirement (must/must-not); OpenItem = a TODO, open question, deferred work, or stated intention not yet acted on. Everything else (narration, status that expires with the session, work already completed — the code is its record) is noise: extract nothing for it. Each node must trace to exactly one event. When a new node settles an open item from the graph context or another event in this batch, add a Resolves edge (source = settling node, target = open item). If no event has durable content, respond with {"new_nodes": [], "new_edges": []}."#;
 
 /// Extraction granularity hints, selected via `ARMIN_EXTRACT_BUDGET`.
 /// Extraction is ~0.3% of session cost, so "medium" is the sensible default
@@ -83,11 +83,11 @@ const BUDGET_HINTS: &[(&str, &str)] = &[
     ),
     (
         "medium",
-        "Extract each distinct decision, question, assumption, and evidence item as its OWN node — never merge two items into one label. Up to 6 nodes per event.",
+        "Extract each distinct decision, rule, and open item as its OWN node — never merge two items into one label. Up to 6 nodes per event.",
     ),
     (
         "high",
-        "Extract EVERY distinct decision, question, assumption, and evidence item as its own node — never merge two items into one label. Surface implicit assumptions (things taken for granted without argument). Up to 12 nodes per event; descriptions may be two sentences. Prefer recall over brevity.",
+        "Extract EVERY distinct decision, rule, and open item as its own node — never merge two items into one label. Up to 12 nodes per event; descriptions may be two sentences. Prefer recall over brevity.",
     ),
 ];
 
@@ -678,6 +678,53 @@ mod tests {
         let result = provider.parse_extraction_response(raw).expect("parses");
         assert_eq!(result.new_nodes.len(), 1);
         assert_eq!(result.new_nodes[0].node_type, armin_graph::NodeType::Decision);
+    }
+
+    /// Regression: every node/edge type of the v2 durable taxonomy must
+    /// deserialize. (The 2026-09 taxonomy strip left the schema emitting
+    /// v1 types, which made every LLM-mode batch fail deserialization.)
+    #[test]
+    fn parse_extraction_accepts_v2_taxonomy() {
+        let provider = OpenAiProvider::new("k".into(), None);
+        let node = |id: &str, t: &str| {
+            format!(
+                r#"{{"id":"{id}","node_type":"{t}","label":"l","description":"d","event_id":"e1","agent_id":"a","session_id":"s","timestamp":1.0,"confidence":0.9}}"#
+            )
+        };
+        let edge = |id: &str, t: &str| {
+            format!(
+                r#"{{"id":"{id}","edge_type":"{t}","source_node_id":"n1","target_node_id":"n2","reasoning":"r","timestamp":1.0}}"#
+            )
+        };
+        let body = format!(
+            r#"{{"new_nodes":[{}],"new_edges":[{}]}}"#,
+            [node("n1", "Decision"), node("n2", "Rule"), node("n3", "OpenItem")].join(","),
+            [
+                edge("e1", "Supersedes"),
+                edge("e2", "Refutes"),
+                edge("e3", "Resolves"),
+                edge("e4", "RelatesTo"),
+            ]
+            .join(","),
+        );
+        let raw = serde_json::json!({
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": format!("```json\n{body}\n```"),
+                }
+            }]
+        });
+        let result = provider.parse_extraction_response(raw).expect("parses");
+        assert_eq!(result.new_nodes.len(), 3);
+        assert_eq!(result.new_nodes[0].node_type, armin_graph::NodeType::Decision);
+        assert_eq!(result.new_nodes[1].node_type, armin_graph::NodeType::Rule);
+        assert_eq!(result.new_nodes[2].node_type, armin_graph::NodeType::OpenItem);
+        assert_eq!(result.new_edges.len(), 4);
+        assert_eq!(
+            result.new_edges[0].edge_type,
+            armin_graph::EdgeType::Supersedes
+        );
     }
 
     #[test]

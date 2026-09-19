@@ -119,11 +119,16 @@ pub struct EngineState {
     pub jev: Option<Arc<JevClient>>,
     /// Sender into the background extraction worker. None when no extractor.
     pub ingest_tx: Option<UnboundedSender<EventRecord>>,
+    /// Per-session scratch: recent tool mutations + verification outcomes.
+    /// In-memory only; feeds cross-layer debt and the brief warnings.
+    pub scratch: Arc<crate::toolclass::Scratch>,
     /// Rolling window of the last N events, used as LLM prompt context.
     pub event_log: Arc<RwLock<std::collections::VecDeque<EventRecord>>>,
     /// Insertion-ordered unique session IDs.
     pub sessions: Arc<RwLock<Vec<String>>>,
     pub current_session_idx: Arc<std::sync::atomic::AtomicUsize>,
+    /// The most recently active session (scratch and briefs key off it).
+    pub current_session_id: Arc<RwLock<String>>,
     /// Last computed debt report, used as the baseline for the next
     /// executive summary's debt delta.
     pub prior_debt: Arc<RwLock<Option<armin_graph::DebtReport>>>,
@@ -153,7 +158,13 @@ impl EngineState {
         };
         self.current_session_idx
             .store(idx, std::sync::atomic::Ordering::SeqCst);
+        *self.current_session_id.write().await = session_id.to_string();
         idx
+    }
+
+    /// The most recently active session ID (empty before the first ingest).
+    pub async fn current_session_id(&self) -> String {
+        self.current_session_id.read().await.clone()
     }
 
     /// Append an event to the rolling context window.

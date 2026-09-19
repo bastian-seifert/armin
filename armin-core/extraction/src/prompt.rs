@@ -108,7 +108,7 @@ pub fn build_extraction_tool_schema() -> Value {
                         "type": "object",
                         "properties": {
                             "id":                  { "type": "string", "description": "A unique ID you assign to this node" },
-                            "node_type":           { "type": "string", "enum": ["Claim", "Evidence", "Assumption", "Question", "Decision"] },
+                            "node_type":           { "type": "string", "enum": ["Decision", "Rule", "OpenItem"] },
                             "label":               { "type": "string", "description": "Short summary, max 15 words" },
                             "description":         { "type": "string", "description": "Longer explanation of this argument component" },
                             "event_id": { "type": "string", "description": "ID of the event this came from" },
@@ -127,7 +127,7 @@ pub fn build_extraction_tool_schema() -> Value {
                         "type": "object",
                         "properties": {
                             "id":             { "type": "string", "description": "A unique ID for this edge" },
-                            "edge_type":      { "type": "string", "enum": ["Supports", "Contradicts", "Refines", "Resolves"] },
+                            "edge_type":      { "type": "string", "enum": ["Supersedes", "Refutes", "Resolves", "RelatesTo"] },
                             "source_node_id": { "type": "string", "description": "ID of the source node" },
                             "target_node_id": { "type": "string", "description": "ID of the target node" },
                             "reasoning":      { "type": "string", "description": "One sentence explaining why this relation exists" },

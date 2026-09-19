@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ARMIN — reasoning state</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: #0b0e14; color: #e6e6e6;
+    font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  header {
+    display: flex; align-items: baseline; gap: 16px;
+    padding: 16px 24px; border-bottom: 1px solid #1c2230;
+  }
+  header h1 { font-size: 16px; margin: 0; color: #a78bfa; }
+  header .sub { color: #6b7280; font-size: 12px; }
+  main { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; padding: 16px 24px; max-width: 1200px; }
+  .card { background: #11151f; border: 1px solid #1c2230; border-radius: 10px; padding: 14px 16px; }
+  .card h2 { font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: #6b7280; margin: 0 0 10px; }
+  .counts { display: flex; gap: 12px; margin-bottom: 8px; flex-wrap: wrap; }
+  .pill { border-radius: 999px; padding: 3px 12px; font-size: 12px; border: 1px solid; }
+  .rule { color: #60a5fa; border-color: #60a5fa55; }
+  .decision { color: #a78bfa; border-color: #a78bfa55; }
+  .openitem { color: #fbbf24; border-color: #fbbf2455; }
+  ul { list-style: none; margin: 0; padding: 0; }
+  li { padding: 6px 0; border-top: 1px solid #1c2230; font-size: 13px; }
+  li .tag { color: #6b7280; font-size: 11px; margin-right: 8px; }
+  .warn { color: #f87171; }
+  .warnmed { color: #fbbf24; }
+  pre {
+    background: #0b0e14; border: 1px solid #1c2230; border-radius: 8px;
+    padding: 10px; font-size: 12px; white-space: pre-wrap; color: #9ca3af;
+    max-height: 240px; overflow: auto;
+  }
+  .err { color: #f87171; font-size: 12px; }
+  @media (max-width: 800px) { main { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>ARMIN</h1>
+  <span class="sub">reasoning state · refreshes every 5s · <span id="fetched">–</span></span>
+</header>
+<main>
+  <div class="card">
+    <h2>Graph</h2>
+    <div class="counts" id="counts"></div>
+    <div class="card" style="padding:0">
+      <ul id="recent"></ul>
+    </div>
+  </div>
+  <div class="card">
+    <h2>Debt &amp; warnings</h2>
+    <ul id="debt"></ul>
+  </div>
+  <div class="card">
+    <h2>Rules</h2>
+    <ul id="rules"></ul>
+  </div>
+  <div class="card">
+    <h2>Brief (injected every turn)</h2>
+    <pre id="brief">…</pre>
+  </div>
+</main>
+<script>
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const li = (html) => `<li>${html}</li>`;
+
+async function refresh() {
+  try {
+    const [snap, debt, brief] = await Promise.all([
+      fetch("/api/v1/snapshot").then((r) => r.json()),
+      fetch("/api/v1/debt").then((r) => r.json()),
+      fetch("/api/v1/state/brief").then((r) => r.json()),
+    ]);
+    const nodes = snap.nodes || [];
+    const counts = { Rule: 0, Decision: 0, OpenItem: 0 };
+    for (const n of nodes) counts[n.node_type] = (counts[n.node_type] || 0) + 1;
+    document.getElementById("counts").innerHTML =
+      `<span class="pill rule">Rules ${counts.Rule}</span>` +
+      `<span class="pill decision">Decisions ${counts.Decision}</span>` +
+      `<span class="pill openitem">Open items ${counts.OpenItem}</span>`;
+
+    const recent = [...nodes].sort((a, b) => b.timestamp - a.timestamp).slice(0, 12);
+    document.getElementById("recent").innerHTML = recent.length
+      ? recent.map((n) => li(`<span class="tag">${esc(n.node_type)}</span>${esc(n.label)}`)).join("")
+      : li('<span class="tag">empty</span> no durable knowledge yet');
+
+    const items = (debt.items || []).slice(0, 12);
+    document.getElementById("debt").innerHTML = items.length
+      ? items.map((i) => li(`<span class="${i.severity === "High" ? "warn" : "warnmed"}">●</span> ${esc(i.description)}`)).join("")
+      : li('<span class="tag">clean</span> nothing outstanding');
+
+    const rules = nodes.filter((n) => n.node_type === "Rule").slice(0, 12);
+    document.getElementById("rules").innerHTML = rules.length
+      ? rules.map((n) => li(esc(n.label))).join("")
+      : li('<span class="tag">none</span> import AGENTS.md or let the agent record rules');
+
+    document.getElementById("brief").textContent = brief.brief || "(empty — nothing worth injecting)";
+    document.getElementById("fetched").textContent = new Date().toLocaleTimeString();
+  } catch (e) {
+    document.getElementById("fetched").innerHTML = `<span class="err">${esc(String(e))}</span>`;
+  }
+}
+refresh();
+setInterval(refresh, 5000);
+</script>
+</body>
+</html>

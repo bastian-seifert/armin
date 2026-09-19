@@ -16,12 +16,14 @@ pub fn build_template_answer(trace: &[String], subgraph: &GraphSnapshot) -> Stri
     let mut sections: Vec<String> = Vec::new();
 
     let mut decisions: Vec<&ArgumentNode> = Vec::new();
+    let mut rules: Vec<&ArgumentNode> = Vec::new();
     let mut open_items: Vec<&ArgumentNode> = Vec::new();
 
     for node_id in &limited_trace {
         if let Some(node) = node_map.get(node_id.as_str()) {
             match node.node_type {
                 armin_graph::NodeType::Decision => decisions.push(node),
+                armin_graph::NodeType::Rule => rules.push(node),
                 armin_graph::NodeType::OpenItem => open_items.push(node),
             }
         }
@@ -78,6 +80,9 @@ pub fn build_template_answer(trace: &[String], subgraph: &GraphSnapshot) -> Stri
     };
 
     if let Some(s) = render_section("Decisions", &decisions) {
+        sections.push(s);
+    }
+    if let Some(s) = render_section("Rules", &rules) {
         sections.push(s);
     }
 

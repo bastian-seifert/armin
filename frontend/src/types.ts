@@ -1,4 +1,4 @@
-export type NodeType = 'Decision' | 'OpenItem'
+export type NodeType = 'Rule' | 'Decision' | 'OpenItem'
 export type EdgeType = 'Supersedes' | 'Refutes' | 'Resolves' | 'RelatesTo'
 
 export type EdgeProvenance =

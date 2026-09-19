@@ -34,7 +34,7 @@ impl Stage for CommunityStage {
             .event_counter
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
-        if count % RECOMPUTE_INTERVAL == 0 || ctx.graph_snapshot.nodes.len() < 10 {
+        if count.is_multiple_of(RECOMPUTE_INTERVAL) || ctx.graph_snapshot.nodes.len() < 10 {
             let report = state.graph.compute_community_report().await;
             ctx.community = Some(report);
         }

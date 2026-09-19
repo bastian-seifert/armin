@@ -6,9 +6,11 @@ use tokio::sync::RwLock;
 
 use crate::{ArgumentNode, GraphStore, NodeRetriever};
 
+type EmbeddingIndex = Vec<(String, Vec<f32>)>;
+
 pub struct EmbeddingRetriever {
     store: GraphStore,
-    index: Arc<RwLock<Vec<(String, Vec<f32>)>>>,
+    index: Arc<RwLock<EmbeddingIndex>>,
     api_key: String,
     model: String,
     rebuild_on_query: Arc<std::sync::atomic::AtomicBool>,
