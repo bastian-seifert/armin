@@ -3,7 +3,7 @@ members = ["graph", "extraction", "server", "grounding", "ingest", "engine", "ht
 resolver = "2"
 
 [workspace.package]
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 license = "Apache-2.0"
 authors = ["Bastian Seifert"]

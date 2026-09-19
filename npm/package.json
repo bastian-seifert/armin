@@ -1,6 +1,6 @@
 {
   "name": "armin-opencode",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "ARMIN — queryable decision memory for AI coding agents. Installs the armin-engine sidecar and registers the opencode plugin.",
   "license": "Apache-2.0",
   "author": "Bastian Seifert",

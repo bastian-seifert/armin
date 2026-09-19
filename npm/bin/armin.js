@@ -97,7 +97,10 @@ function buildFromSource() {
 function registerPlugin() {
   const plugin = path.join(PKG_ROOT, "plugins", "armin.ts");
   if (!fs.existsSync(plugin)) throw new Error(`plugin not found at ${plugin}`);
-  const cfgDir = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config", "opencode");
+  const cfgDir = path.join(
+    process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config"),
+    "opencode",
+  );
   const cfgPath = fs.existsSync(path.join(cfgDir, "opencode.jsonc"))
     ? path.join(cfgDir, "opencode.jsonc")
     : path.join(cfgDir, "opencode.json");
