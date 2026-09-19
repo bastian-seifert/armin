@@ -49,3 +49,35 @@ jobs:
           files: |
             ${{ matrix.archive }}.tar.gz
             ${{ matrix.archive }}.tar.gz.sha256
+
+  npm:
+    name: Publish npm package
+    runs-on: ubuntu-latest
+    needs: binaries
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org/
+      - name: check for NPM_TOKEN
+        id: token
+        run: |
+          if [ -n "${{ secrets.NPM_TOKEN }}" ]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "NPM_TOKEN not set — skipping npm publish"
+          fi
+      - name: stage package (version from tag, plugin file)
+        if: steps.token.outputs.publish == 'true'
+        run: |
+          mkdir -p npm/plugins
+          cp .opencode/plugins/armin.ts npm/plugins/armin.ts
+          node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('npm/package.json','utf-8'));p.version=process.env.GITHUB_REF_NAME.slice(1);fs.writeFileSync('npm/package.json',JSON.stringify(p,null,2)+'\n')"
+      - name: publish
+        if: steps.token.outputs.publish == 'true'
+        working-directory: npm
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

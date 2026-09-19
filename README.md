@@ -61,9 +61,10 @@ A standalone **`armin-server`** (same graph, event stream + WebSocket + React fr
 ## Quickstart: opencode middleware (recommended)
 
 ```bash
-# 1. Install: build the sidecar, register the plugin globally, verify.
-scripts/install.sh               # needs cargo; or grab a binary from Releases
-                                 # and re-run with --skip-build
+# 1. Install (pick one):
+npx armin-opencode install       # npm: fetches the release binary + registers
+                                 # the plugin (no Rust toolchain needed)
+scripts/install.sh               # or build from source (needs cargo)
 
 # 2. Enable it per environment (the plugin itself is global, the engine opt-in)
 export ARMIN_ENABLED=1
