@@ -8,6 +8,9 @@ npx armin-opencode install      # or: npm i -g armin-opencode && armin install
 export ARMIN_ENABLED=1
 ```
 
+Prefer a global install over one-off `npx` runs: the plugin registration
+points at the package's install location, and `npx` caches are evicted.
+
 `armin install` downloads the `armin-engine` sidecar binary for your platform
 from the [GitHub releases](https://github.com/bastian-seifert/armin/releases)
 and registers the plugin in your global opencode config. Enable it per
