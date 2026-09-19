@@ -1,0 +1,18 @@
+[package]
+name = "armin-extraction"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+armin-ingest     = { path = "../ingest" }
+armin-graph     = { path = "../graph" }
+reqwest         = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace  = true
+chrono.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+minijinja        = { version = "2", features = ["loader"] }
+async-trait.workspace = true

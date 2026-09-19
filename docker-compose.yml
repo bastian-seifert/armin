@@ -1,0 +1,63 @@
+services:
+  # ── ARMIN reasoning engine (sidecar) ──────────────────────────────────
+  armin:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: engine
+    ports:
+      - "9009:9009"
+    volumes:
+      - armin-data:/data
+    command: ["armin-engine", "--port", "9009", "--db-path", "/data/graph.db"]
+    env_file:
+      - .env
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9009/api/v1/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # ── Cognee memory platform ────────────────────────────────────────────
+  cognee:
+    image: cognee/cognee:latest
+    ports:
+      - "8000:8000"
+    environment:
+      - ARMIN_URL=http://armin:9009
+      - COGNEE_GRAPH_ENGINE=armin          # tells Cognee to use ArminGraphDB
+    env_file:
+      - .env
+    depends_on:
+      armin:
+        condition: service_healthy
+
+  # ── ARMIN full server (optional: extraction pipeline + frontend) ──────
+  server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: server
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    command: ["armin-server", "--stream", "/data/stream.jsonl", "--db-path", "/data/graph.db", "--speed", "8"]
+    volumes:
+      - ./data:/data
+    profiles:
+      - full
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "5173:80"
+    environment:
+      VITE_WS_URL: ws://localhost:8080/ws/stream
+    profiles:
+      - full
+
+volumes:
+  armin-data:

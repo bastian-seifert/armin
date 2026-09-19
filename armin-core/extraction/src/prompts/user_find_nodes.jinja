@@ -1,0 +1,8 @@
+Given these argument graph nodes:
+{% for node in nodes %}
+  {{ node.id }}: {{ node.label }}
+{% endfor %}
+
+Question: {{ question }}
+
+Return ONLY a JSON array of the 5 most relevant node IDs for answering this question, like: ["id1", "id2"]. No other text.

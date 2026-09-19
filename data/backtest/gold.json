@@ -1,0 +1,52 @@
+{
+  "meta": {
+    "annotator": "session author (assistant), reviewing the same dialogue it participated in",
+    "caveat": "Self-annotated corpus: labels come from the same model family that produced the conversation, so this measures consistency, not independent human agreement.",
+    "note": "Gold items are the argumentatively significant units; a good extraction should find these or close paraphrases. Sub-claims are acceptable matches for their parent."
+  },
+  "decisions": [
+    { "id": "D01", "label": "Adopt plugin + sidecar middleware architecture over forking opencode", "who": "user+assistant", "status": "validated" },
+    { "id": "D02", "label": "Keep LLM extraction in the Rust sidecar", "who": "user", "status": "validated" },
+    { "id": "D03", "label": "Cover everything through responsiveness in the first implementation phase", "who": "user", "status": "validated" },
+    { "id": "D04", "label": "Convert tool-call events to Evidence nodes deterministically without LLM", "who": "assistant", "status": "validated" },
+    { "id": "D05", "label": "Batch prose events with a 15s/10-event debounce into one LLM call per batch", "who": "assistant", "status": "validated" },
+    { "id": "D06", "label": "Use loopback binding and bearer-token auth for the engine", "who": "assistant", "status": "validated" },
+    { "id": "D07", "label": "Read OPENAI_BASE_URL with fallback to ANTHROPIC_BASE_URL for OpenAI-compatible gateways", "who": "assistant", "status": "validated" },
+    { "id": "D08", "label": "Add self-healing JSON-in-content mode when gateways ignore forced tool calls", "who": "assistant", "status": "validated" },
+    { "id": "D09", "label": "Consolidate to six opencode tools instead of ten", "who": "assistant", "status": "validated" },
+    { "id": "D10", "label": "Inject reasoning-state brief into the system prompt every turn", "who": "assistant", "status": "validated" },
+    { "id": "D11", "label": "Make ARMIN opt-in rather than auto-enabled for all sessions", "who": "assistant", "status": "validated" },
+    { "id": "D12", "label": "Derive deterministic node IDs from event IDs so re-ingestion is idempotent", "who": "assistant", "status": "validated" },
+    { "id": "D13", "label": "Use poe OpenAI-compatible endpoint with GLM-5.3-flash for extraction", "who": "user", "status": "validated" }
+  ],
+  "questions": [
+    { "id": "Q01", "label": "Backtest extraction against this real conversation to evaluate quality", "status": "open-then-accepted" },
+    { "id": "Q02", "label": "Can extraction reuse opencode's internal model and auth?", "status": "resolved" },
+    { "id": "Q03", "label": "Is ANTHROPIC_BASE_URL the right env var for the poe OpenAI-compatible endpoint?", "status": "resolved-no" },
+    { "id": "Q04", "label": "Does the poe gateway support forced tool calling?", "status": "resolved-no" },
+    { "id": "Q05", "label": "Migrate storage from unmaintained sled to redb", "status": "open" },
+    { "id": "Q06", "label": "Replace HTTP sidecar with a napi-rs native addon in phase 3", "status": "open" }
+  ],
+  "assumptions": [
+    { "id": "A01", "label": "The message.part.updated event payload shape is stable across opencode versions" },
+    { "id": "A02", "label": "A cheap flash-class model is adequate for structured extraction quality" },
+    { "id": "A03", "label": "Linux and macOS are the only platforms that matter for now" }
+  ],
+  "evidence": [
+    { "id": "E01", "label": "Plain chat completion probe against poe returned OK" },
+    { "id": "E02", "label": "Forced tool_choice probe against poe returned no tool_calls" },
+    { "id": "E03", "label": "JSON-in-content probe against poe returned valid extraction JSON" },
+    { "id": "E04", "label": "Workspace tests pass in 16 suites with zero compiler warnings" },
+    { "id": "E05", "label": "Engine smoke test verified auth, ingest, brief, query, and restart persistence" },
+    { "id": "E06", "label": "Live GLM extraction produced 4 nodes and 3 edges with zero errors" }
+  ],
+  "contradictions": [
+    { "id": "C01", "label": "Initial claim that the middleware had no opencode-config integration was contradicted after implementing file-based armin config", "who": "assistant self-correction" }
+  ],
+  "key_relations": [
+    { "source": "E02", "target": "D08", "type": "Supports", "note": "the dropped tool call motivated the JSON fallback" },
+    { "source": "E03", "target": "D08", "type": "Supports", "note": "JSON mode probe validated the fallback works" },
+    { "source": "E06", "target": "D13", "type": "Supports", "note": "live extraction validated the poe/GLM choice" },
+    { "source": "Q04", "target": "D08", "type": "Resolves", "note": "the tool-call question was answered by building the fallback" }
+  ]
+}

@@ -1,0 +1,686 @@
+{
+  "model": "jev-1.13.0",
+  "config": {
+    "model": "jev-1.13.0",
+    "relabel_threshold": 0.8,
+    "drop_grounded": 0.3,
+    "assumption_threshold": 0.6,
+    "chunk_size": 10,
+    "snapshot": null,
+    "native_only": true,
+    "native_threshold": 0.85,
+    "no_edges": true,
+    "edge_threshold": 0.7,
+    "edge_min_overlap": 1,
+    "edge_chunk": 15,
+    "no_cache": false
+  },
+  "stats": {
+    "sentences": 46,
+    "kept": 22,
+    "noise": 9,
+    "below_threshold": 15,
+    "duplicates": 0,
+    "tools_provenance_only": 6
+  },
+  "scan": [
+    {
+      "event_id": "f01",
+      "sentence": "Critically review this project (ARMIN: queryable decision memory for AI agents \u2014 typed argument graph in Rust, LLM extraction, MCP server, React frontend), gauge its usefulness for you in an agent harness like opencode, think about how to improve the code and how to implement it as a middleware layer, and how to make it more responsive without much more delay or cost.",
+      "choice": "noise",
+      "p": 0.52
+    },
+    {
+      "event_id": "f02",
+      "sentence": "Review verdict: the typed Claim/Evidence/Assumption/Question/Decision graph with continuous reasoning-debt detection is the defensible differentiator; the Rust petgraph/sled core is solid at ~2400 lines; the OPENCODE.md integration plan is honest.",
+      "choice": "Decision",
+      "p": 0.86
+    },
+    {
+      "event_id": "f02",
+      "sentence": "Critical problems, in order: (1) the current opencode integration does not actually observe sessions \u2014 opencode.json runs an MCP stdio server over a static demo JSONL file, and there is no POST /ingest endpoint, so the graph never sees real work; (2) MCP stdio via cargo run recompiles at session start and the server requires an API key even for pure graph queries; (3) per-event costs are super-linear \u2014 the stream runner clones the entire graph per event, BM25 rebuilds token maps over all nodes per query, and node order is re-serialized into sled on every insert (O(N^2) over a session); (4) extraction is serial and blocking \u2014 one slow LLM call stalls the whole stream; (5) dedup is unimplemented \u2014 mention_count is documented but never incremented, so the graph bloats with near-duplicate claims, which also inflates prompt cost; (6) test coverage is about 6 unit tests across 6650 lines with no eval dataset; (7) the server binds 0.0.0.0 with permissive CORS and zero auth, so anyone on the LAN can read the graph.",
+      "choice": "OpenItem",
+      "p": 0.94
+    },
+    {
+      "event_id": "f02",
+      "sentence": "Usefulness for me as the agent: high but conditional \u2014 it pays off in long multi-hour sessions where context compaction wipes the why, in cross-session continuity, and for contradiction/thrash detection; short sessions gain nothing so it should be opt-in.",
+      "choice": "Decision",
+      "p": 0.97
+    },
+    {
+      "event_id": "f02",
+      "sentence": "Key design insight: tools alone underdeliver because a model will not spontaneously call query_graph; the value comes from passive capture plus push \u2014 injecting a compact reasoning-state system reminder (open questions, active contradiction, recent decisions) at session start and after compaction.",
+      "choice": "Decision",
+      "p": 1.0
+    },
+    {
+      "event_id": "f02",
+      "sentence": "Middleware architecture: layer 1 capture is passive and deterministic (tool calls become Evidence nodes with no LLM), layer 2 extraction is an async debounced batch queue (one cheap-model call per window, never blocking the agent turn), layer 3 serves six tools plus pushes the brief.",
+      "choice": "Decision",
+      "p": 1.0
+    },
+    {
+      "event_id": "f02",
+      "sentence": "Recommended integration is an opencode plugin plus Rust sidecar over forking opencode (80% of the fork plan's value at 20% of its cost); an LLM-proxy middleware is more general but fragile; MCP-only cannot passively observe sessions.",
+      "choice": "Decision",
+      "p": 1.0
+    },
+    {
+      "event_id": "f02",
+      "sentence": "Responsiveness levers with no added latency or cost: zero added latency by construction (capture is a trivial POST, queries are sub-10ms Rust, LLM only in explicit mode), batch extraction per 15s window instead of per event, deterministic template extraction for tool events (removes 70-80% of extraction calls), cheap haiku-class model for extraction, prompt caching on the stable system prompt, and push-not-poll reminders computed from cached debt state.",
+      "choice": "Decision",
+      "p": 1.0
+    },
+    {
+      "event_id": "f03",
+      "sentence": "Decisions from the direction questions: plugin + sidecar middleware (recommended), keep LLM extraction in the Rust sidecar, and the first implementation phase should cover everything through responsiveness.",
+      "choice": "Decision",
+      "p": 1.0
+    },
+    {
+      "event_id": "f04",
+      "sentence": "Locked plan: Phase 0 fixes the server (loopback bind, bearer auth, prebuilt binary not cargo run, provider/key pairing, lazy analytics).",
+      "choice": "Decision",
+      "p": 0.99
+    },
+    {
+      "event_id": "f04",
+      "sentence": "Phase 1 builds the armin-engine sidecar: /ingest endpoint, async extraction worker with debounce buffer and one cheap-model call per batch with prompt caching, deterministic tool-event extraction via a new event_kind field, /state/brief for zero-cost reasoning-state push, ARMIN_PORT stdout handshake with graceful SIGTERM.",
+      "choice": "Decision",
+      "p": 0.99
+    },
+    {
+      "event_id": "f04",
+      "sentence": "Phase 2 is the opencode plugin: sidecar lifecycle manager, passive capture hooks, push hooks including compaction survival, six consolidated tools instead of ten, opt-in config.",
+      "choice": "Decision",
+      "p": 0.99
+    },
+    {
+      "event_id": "f04",
+      "sentence": "Phase 3 adds a /metrics endpoint and tuning knobs.",
+      "choice": "Decision",
+      "p": 0.95
+    },
+    {
+      "event_id": "f04",
+      "sentence": "Phase 4 is golden tests, integration tests, and eval replay.",
+      "choice": "Decision",
+      "p": 0.88
+    },
+    {
+      "event_id": "f04",
+      "sentence": "The plan adds roughly 600-800 lines of Rust and 400 lines of TypeScript with no fork and no changes to the existing frontend server.",
+      "choice": "Decision",
+      "p": 0.69
+    },
+    {
+      "event_id": "f05",
+      "sentence": "Yes execute, ensure high code quality, and awesome software architecture!",
+      "choice": "noise",
+      "p": 0.8
+    },
+    {
+      "event_id": "f06",
+      "sentence": "Executed Phase 0: extended EventRecord with event_kind (utterance, tool_call, user_prompt) plus tool_name, files, and commit fields, all serde-defaulted so legacy JSONL replays keep working, and a has_extraction_signal prefilter to skip procedural text.",
+      "choice": "Decision",
+      "p": 0.57
+    },
+    {
+      "event_id": "f06",
+      "sentence": "Fixed the provider/key pairing bug so the OpenAI provider can never be paired with an Anthropic key, and reused one reqwest client instead of rebuilding per call.",
+      "choice": "Decision",
+      "p": 0.6
+    },
+    {
+      "event_id": "f06",
+      "sentence": "Made node-order persistence O(1) with per-index sled keys replacing the whole-list rewrite, with automatic legacy migration.",
+      "choice": "Decision",
+      "p": 0.73
+    },
+    {
+      "event_id": "f06",
+      "sentence": "Added recent_snapshot so prompt context is O(k) instead of cloning the whole graph.",
+      "choice": "Decision",
+      "p": 0.68
+    },
+    {
+      "event_id": "f06",
+      "sentence": "Made --stream optional and added lazy analytics flags.",
+      "choice": "Decision",
+      "p": 0.58
+    },
+    {
+      "event_id": "f07",
+      "sentence": "Built the armin-engine sidecar middleware: axum API with /ingest (batch), /state/brief, /query, agent writes, debt/decisions/risks/summary/communities/diff, /metrics and /health; bearer-token auth in a shared armin-http crate; loopback-only binding; ARMIN_PORT stdout handshake; SIGTERM graceful shutdown with sled flush; runs without an API key in deterministic-only mode.",
+      "choice": "Decision",
+      "p": 0.62
+    },
+    {
+      "event_id": "f07",
+      "sentence": "The background extraction worker batches prose events (15 second debounce, 10 events per batch) into one LLM call with Anthropic prompt caching and a cheap-model override, so the agent turn never blocks on the graph.",
+      "choice": "Decision",
+      "p": 0.92
+    },
+    {
+      "event_id": "f07",
+      "sentence": "Tool-call events are converted to Evidence nodes by templates with no LLM, with node IDs derived from event IDs so re-ingestion is idempotent.",
+      "choice": "Decision",
+      "p": 0.94
+    },
+    {
+      "event_id": "f07",
+      "sentence": "Smoke test verified: auth returns 401 for missing and wrong tokens, ingest captures tool events deterministically, agent decision writes work, the brief lists the decision and the open question, and the graph survives restart.",
+      "choice": "noise",
+      "p": 0.96
+    },
+    {
+      "event_id": "f08",
+      "sentence": "Built the opencode plugin: spawns the sidecar with port handshake, health polling, restart cap of three, and a per-worktree sled database.",
+      "choice": "noise",
+      "p": 0.53
+    },
+    {
+      "event_id": "f08",
+      "sentence": "Passive capture hooks: tool.execute.after feeds tool calls as deterministic evidence, completed assistant text parts and user prompts are queued for batched LLM extraction, all fire-and-forget so the agent turn is never delayed.",
+      "choice": "Decision",
+      "p": 0.76
+    },
+    {
+      "event_id": "f08",
+      "sentence": "Push hooks: experimental.chat.system.transform injects the reasoning-state brief every turn (skipped when empty), and experimental.session.compacting injects decisions and open questions so reasoning survives compaction.",
+      "choice": "Decision",
+      "p": 0.77
+    },
+    {
+      "event_id": "f08",
+      "sentence": "Six consolidated tools with Zod schemas: query_graph, record_decision, raise_question, resolve_question, invalidate_assumption, get_status.",
+      "choice": "Decision",
+      "p": 0.68
+    },
+    {
+      "event_id": "f08",
+      "sentence": "TypeScript strict typecheck is clean and the runtime smoke test passed with the real binary.",
+      "choice": "noise",
+      "p": 0.99
+    },
+    {
+      "event_id": "f09",
+      "sentence": "Integration tests spawned the real engine binary and caught two real bugs: metrics counted duplicate nodes on re-ingestion (fixed by checking existence before counting so idempotency is enforced), and the persistence test initially used SIGKILL which skips the sled flush, so the test now sends SIGTERM to exercise graceful shutdown.",
+      "choice": "Decision",
+      "p": 0.68
+    },
+    {
+      "event_id": "f09",
+      "sentence": "The end-to-end test covers auth, ingest, agent writes, brief, query, restart persistence, and idempotent ingestion.",
+      "choice": "noise",
+      "p": 0.74
+    },
+    {
+      "event_id": "f09",
+      "sentence": "All 47 tests pass across the workspace with zero compiler warnings, and the incremental BM25 index was implemented properly: term frequencies, document frequencies, and total length are maintained on insert and seeded from sled on load, so queries no longer rescan the graph.",
+      "choice": "noise",
+      "p": 0.56
+    },
+    {
+      "event_id": "f10",
+      "sentence": "Q1: Does it use the internal opencode model, and can it be configured over the opencode config, or does it still rely on environment variables?",
+      "choice": "OpenItem",
+      "p": 0.95
+    },
+    {
+      "event_id": "f10",
+      "sentence": "Q2: How is the test setup against this conversation as a back test so you can evaluate?",
+      "choice": "OpenItem",
+      "p": 0.92
+    },
+    {
+      "event_id": "f11",
+      "sentence": "Answers and fixes: extraction previously used only environment variables (LLM_MODEL, ARMIN_MODEL, ANTHROPIC_API_KEY, OPENAI_API_KEY), not opencode's configured model or auth.",
+      "choice": "Decision",
+      "p": 0.66
+    },
+    {
+      "event_id": "f11",
+      "sentence": "The opencode config schema strips unknown top-level keys before plugins see them, so the plugin now reads the armin section directly from opencode config files (JSON and JSONC, global then project) with keys enabled, provider, apiKey, model, batchMs, batchEvents, dbDir; environment variables remain the escape hatch.",
+      "choice": "Decision",
+      "p": 0.99
+    },
+    {
+      "event_id": "f11",
+      "sentence": "A new POST /api/v1/config endpoint updates the extraction model at runtime: model session follows the live session model pushed from the plugin whenever it changes, model small reuses opencode's small_model setting, and any other string is a fixed model.",
+      "choice": "Decision",
+      "p": 0.97
+    },
+    {
+      "event_id": "f11",
+      "sentence": "Limitation documented: opencode's auth store including OAuth logins is not exposed to plugins, so extraction uses config or environment API keys.",
+      "choice": "Decision",
+      "p": 0.97
+    },
+    {
+      "event_id": "f11",
+      "sentence": "For Q2, the backtest against this real conversation was started as the evaluation corpus.",
+      "choice": "noise",
+      "p": 0.54
+    },
+    {
+      "event_id": "f12",
+      "sentence": "We just had to change the .env file to contain a key for OpenRouter with model choice GLM-5.3-flash and endpoint to poe (OpenAI compatible) \u2014 is the key really ANTHROPIC_BASE_URL?",
+      "choice": "OpenItem",
+      "p": 0.93
+    },
+    {
+      "event_id": "f13",
+      "sentence": "No \u2014 ANTHROPIC_BASE_URL only affects the Anthropic provider.",
+      "choice": "Decision",
+      "p": 0.93
+    },
+    {
+      "event_id": "f13",
+      "sentence": "Probing the poe endpoint revealed three real bugs, all fixed: first, the OpenAI provider ignored base URLs entirely, so OPENAI_BASE_URL is now read with a fallback to ANTHROPIC_BASE_URL and a trailing /v1 is normalized away (previously the URL would have doubled to api.poe.com/v1/v1); second, the Anthropic-shaped tool schema (input_schema) was sent unmodified to OpenAI which requires parameters, causing 400 errors \u2014 a converter was added; third, probing showed poe's GLM endpoint silently ignores forced tool calls (empty content, finish_reason stop), so a self-healing JSON-in-content mode was added that retries once and then sticks for the session.",
+      "choice": "Decision",
+      "p": 0.7
+    },
+    {
+      "event_id": "f13",
+      "sentence": "Verified live end-to-end: GLM-5.3-flash extracted four nodes and three edges from a test conversation with zero errors and zero warnings, and the reasoning-state brief correctly showed the Validated decision to use JWT and the open question about refresh-token rotation.",
+      "choice": "OpenItem",
+      "p": 0.49
+    },
+    {
+      "event_id": "f13",
+      "sentence": "Also fixed the worker to add all nodes across a batch before any edge, since edges had failed when referencing nodes bucketed under a different event.",
+      "choice": "Decision",
+      "p": 0.69
+    },
+    {
+      "event_id": "f14",
+      "sentence": "Yes please backtest against this full conversation.",
+      "choice": "noise",
+      "p": 0.83
+    }
+  ],
+  "nodes": [
+    {
+      "id": "jev-native-f02-0",
+      "node_type": "Decision",
+      "label": "Review verdict: the typed Claim/Evidence/Assumption/Question/Decision graph with continuous reasoning-debt detection is the\u2026",
+      "description": "Review verdict: the typed Claim/Evidence/Assumption/Question/Decision graph with continuous reasoning-debt detection is the defensible differentiator; the Rust petgraph/sled core is solid at ~2400 lines; the OPENCODE.md integration plan is honest.",
+      "event_id": "f02",
+      "agent_id": "jev-native",
+      "session_id": "backtest-1",
+      "timestamp": 8.0,
+      "confidence": 0.86,
+      "files": [],
+      "commit": null,
+      "mention_count": 1,
+      "status": "Active"
+    },
+    {
+      "id": "jev-native-f02-1",
+      "node_type": "OpenItem",
+      "label": "Critical problems, in order: (1) the current opencode integration does not actually\u2026",
+      "description": "Critical problems, in order: (1) the current opencode integration does not actually observe sessions \u2014 opencode.json runs an MCP stdio server over a static demo JSONL file, and there is no POST /ingest endpoint, so the graph never sees real work; (2) MCP stdio via cargo run recompiles at session start and the server requires an API key even for pure graph queries; (3) per-event costs are super-linear \u2014 the stream runner clones the entire graph per event, BM25 rebuilds token maps over all nodes per query, and node order is re-serialized into sled on every insert (O(N^2) over a session); (4) extraction is serial and blocking \u2014 one slow LLM call stalls the whole stream; (5) dedup is unimplemented \u2014 mention_count is documented but never incremented, so the graph bloats with near-duplicate claims, which also inflates prompt cost; (6) test coverage is about 6 unit tests across 6650 lines with no eval dataset; (7) the server binds 0.0.0.0 with permissive CORS and zero auth, so anyone on the LAN can read the graph.",
+      "event_id": "f02",
+      "agent_id": "jev-native",
+      "session_id": "backtest-1",
+      "timestamp": 8.0,
+      "confidence": 0.94,
+      "files": [],
+      "commit": null,
+      "mention_count": 1,
+      "status": "Active"
+    },
+    {
+      "id": "jev-native-f02-2",
+      "node_type": "Decision",
+      "label": "Usefulness for me as the agent: high but conditional \u2014 it pays\u2026",
+      "description": "Usefulness for me as the agent: high but conditional \u2014 it pays off in long multi-hour sessions where context compaction wipes the why, in cross-session continuity, and for contradiction/thrash detection; short sessions gain nothing so it should be opt-in.",
+      "event_id": "f02",
+      "agent_id": "jev-native",
+      "session_id": "backtest-1",
+      "timestamp": 8.0,
+      "confidence": 0.97,
+      "files": [],
+      "commit": null,
+      "mention_count": 1,
+      "status": "Active"
+    },
+    {
+      "id": "jev-native-f02-3",
+      "node_type": "Decision",
+      "label": "Key design insight: tools alone underdeliver because a model will not spontaneously\u2026",
+      "description": "Key design insight: tools alone underdeliver because a model will not spontaneously call query_graph; the value comes from passive capture plus push \u2014 injecting a compact reasoning-state system reminder (open questions, active contradiction, recent decisions) at session start and after compaction.",
+      "event_id": "f02",
+      "agent_id": "jev-native",
+      "session_id": "backtest-1",
+      "timestamp": 8.0,
+      "confidence": 1.0,
+      "files": [],
+      "commit": null,
+      "mention_count": 1,
+      "status": "Active"
+    },
+    {
+      "id": "jev-native-f02-4",
+      "node_type": "Decision",
+      "label": "Middleware architecture: layer 1 capture is passive and deterministic (tool calls become\u2026",
+      "description": "Middleware architecture: layer 1 capture is passive and deterministic (tool calls become Evidence nodes with no LLM), layer 2 extraction is an async debounced batch queue (one cheap-model call per window, never blocking the agent turn), layer 3 serves six tools plus pushes the brief.",
+      "event_id": "f02",
+      "agent_id": "jev-native",
+      "session_id": "backtest-1",
+      "timestamp": 8.0,
+      "confidence": 1.0,
+      "files": [],
+      "commit": null,
+      "mention_count": 1,
+      "status": "Active"
+    },
+    {
+      "id": "jev-native-f02-5",
+      "node_type": "Decision",
+      "label": "Recommended integration is an opencode plugin plus Rust sidecar over forking opencode\u2026",
+      "description": "Recommended integration is an opencode plugin plus Rust sidecar over forking opencode (80% of the fork plan's value at 20% of its cost); an LLM-proxy middleware is more general but fragile; MCP-only cannot passively observe sessions.",
+      "event_id": "f02",
+      "agent_id": "jev-native",
+      "session_id": "backtest-1",
+      "timestamp": 8.0,
+      "confidence": 1.0,
+      "files": [],
+      "commit": null,
+      "mention_count": 1,
+      "status": "Active"
+    },
+    {
+      "id": "jev-native-f02-6",
+      "node_type": "Decision",
+      "label": "Responsiveness levers with no added latency or cost: zero added latency by\u2026",
+      "description": "Responsiveness levers with no added latency or cost: zero added latency by construction (capture is a trivial POST, queries are sub-10ms Rust, LLM only in explicit mode), batch extraction per 15s window instead of per event, deterministic template extraction for tool events (removes 70-80% of extraction calls), cheap haiku-class model for extraction, prompt caching on the stable system prompt, and push-not-poll reminders computed from cached debt state.",
+      "event_id": "f02",
+      "agent_id": "jev-native",
+      "session_id": "backtest-1",
+      "timestamp": 8.0,
+      "confidence": 1.0,
+      "files": [],
+      "commit": null,
+      "mention_count": 1,
+      "status": "Active"
+    },
+    {
+      "id": "jev-native-f03-0",
+      "node_type": "Decision",
+      "label": "Decisions from the direction questions: plugin + sidecar middleware (recommended), keep LLM\u2026",
+      "description": "Decisions from the direction questions: plugin + sidecar middleware (recommended), keep LLM extraction in the Rust sidecar, and the first implementation phase should cover everything through responsiveness.",
+      "event_id": "f03",
+      "agent_id": "jev-native",
+      "session_id": "backtest-1",
+      "timestamp": 9.0,
+      "confidence": 1.0,
+      "files": [],
+      "commit": null,
+      "mention_count": 1,
+      "status": "Active"
+    },
+    {
+      "id": "jev-native-f04-0",
+      "node_type": "Decision",
+      "label": "Locked plan: Phase 0 fixes the server (loopback bind, bearer auth, prebuilt\u2026",
+      "description": "Locked plan: Phase 0 fixes the server (loopback bind, bearer auth, prebuilt binary not cargo run, provider/key pairing, lazy analytics).",
+      "event_id": "f04",
+      "agent_id": "jev-native",
+      "session_id": "backtest-1",
+      "timestamp": 12.0,
+      "confidence": 0.99,
+      "files": [],
+      "commit": null,
+      "mention_count": 1,
+      "status": "Active"
+    },
+    {
+      "id": "jev-native-f04-1",
+      "node_type": "Decision",
+      "label": "Phase 1 builds the armin-engine sidecar: /ingest endpoint, async extraction worker with\u2026",
+      "description": "Phase 1 builds the armin-engine sidecar: /ingest endpoint, async extraction worker with debounce buffer and one cheap-model call per batch with prompt caching, deterministic tool-event extraction via a new event_kind field, /state/brief for zero-cost reasoning-state push, ARMIN_PORT stdout handshake with graceful SIGTERM.",
+      "event_id": "f04",
+      "agent_id": "jev-native",
+      "session_id": "backtest-1",
+      "timestamp": 12.0,
+      "confidence": 0.99,
+      "files": [],
+      "commit": null,
+      "mention_count": 1,
+      "status": "Active"
+    },
+    {
+      "id": "jev-native-f04-2",
+      "node_type": "Decision",
+      "label": "Phase 2 is the opencode plugin: sidecar lifecycle manager, passive capture hooks,\u2026",
+      "description": "Phase 2 is the opencode plugin: sidecar lifecycle manager, passive capture hooks, push hooks including compaction survival, six consolidated tools instead of ten, opt-in config.",
+      "event_id": "f04",
+      "agent_id": "jev-native",
+      "session_id": "backtest-1",
+      "timestamp": 12.0,
+      "confidence": 0.99,
+      "files": [],
+      "commit": null,
+      "mention_count": 1,
+      "status": "Active"
+    },
+    {
+      "id": "jev-native-f04-3",
+      "node_type": "Decision",
+      "label": "Phase 3 adds a /metrics endpoint and tuning knobs.",
+      "description": "Phase 3 adds a /metrics endpoint and tuning knobs.",
+      "event_id": "f04",
+      "agent_id": "jev-native",
+      "session_id": "backtest-1",
+      "timestamp": 12.0,
+      "confidence": 0.95,
+      "files": [],
+      "commit": null,
+      "mention_count": 1,
+      "status": "Active"
+    },
+    {
+      "id": "jev-native-f04-4",
+      "node_type": "Decision",
+      "label": "Phase 4 is golden tests, integration tests, and eval replay.",
+      "description": "Phase 4 is golden tests, integration tests, and eval replay.",
+      "event_id": "f04",
+      "agent_id": "jev-native",
+      "session_id": "backtest-1",
+      "timestamp": 12.0,
+      "confidence": 0.88,
+      "files": [],
+      "commit": null,
+      "mention_count": 1,
+      "status": "Active"
+    },
+    {
+      "id": "jev-native-f07-1",
+      "node_type": "Decision",
+      "label": "The background extraction worker batches prose events (15 second debounce, 10 events\u2026",
+      "description": "The background extraction worker batches prose events (15 second debounce, 10 events per batch) into one LLM call with Anthropic prompt caching and a cheap-model override, so the agent turn never blocks on the graph.",
+      "event_id": "f07",
+      "agent_id": "jev-native",
+      "session_id": "backtest-1",
+      "timestamp": 30.0,
+      "confidence": 0.92,
+      "files": [],
+      "commit": null,
+      "mention_count": 1,
+      "status": "Active"
+    },
+    {
+      "id": "jev-native-f07-2",
+      "node_type": "Decision",
+      "label": "Tool-call events are converted to Evidence nodes by templates with no LLM,\u2026",
+      "description": "Tool-call events are converted to Evidence nodes by templates with no LLM, with node IDs derived from event IDs so re-ingestion is idempotent.",
+      "event_id": "f07",
+      "agent_id": "jev-native",
+      "session_id": "backtest-1",
+      "timestamp": 30.0,
+      "confidence": 0.94,
+      "files": [],
+      "commit": null,
+      "mention_count": 1,
+      "status": "Active"
+    },
+    {
+      "id": "jev-native-f10-0",
+      "node_type": "OpenItem",
+      "label": "Q1: Does it use the internal opencode model, and can it be\u2026",
+      "description": "Q1: Does it use the internal opencode model, and can it be configured over the opencode config, or does it still rely on environment variables?",
+      "event_id": "f10",
+      "agent_id": "jev-native",
+      "session_id": "backtest-1",
+      "timestamp": 39.0,
+      "confidence": 0.95,
+      "files": [],
+      "commit": null,
+      "mention_count": 1,
+      "status": "Active"
+    },
+    {
+      "id": "jev-native-f10-1",
+      "node_type": "OpenItem",
+      "label": "Q2: How is the test setup against this conversation as a back\u2026",
+      "description": "Q2: How is the test setup against this conversation as a back test so you can evaluate?",
+      "event_id": "f10",
+      "agent_id": "jev-native",
+      "session_id": "backtest-1",
+      "timestamp": 39.0,
+      "confidence": 0.92,
+      "files": [],
+      "commit": null,
+      "mention_count": 1,
+      "status": "Active"
+    },
+    {
+      "id": "jev-native-f11-1",
+      "node_type": "Decision",
+      "label": "The opencode config schema strips unknown top-level keys before plugins see them,\u2026",
+      "description": "The opencode config schema strips unknown top-level keys before plugins see them, so the plugin now reads the armin section directly from opencode config files (JSON and JSONC, global then project) with keys enabled, provider, apiKey, model, batchMs, batchEvents, dbDir; environment variables remain the escape hatch.",
+      "event_id": "f11",
+      "agent_id": "jev-native",
+      "session_id": "backtest-1",
+      "timestamp": 48.0,
+      "confidence": 0.99,
+      "files": [],
+      "commit": null,
+      "mention_count": 1,
+      "status": "Active"
+    },
+    {
+      "id": "jev-native-f11-2",
+      "node_type": "Decision",
+      "label": "A new POST /api/v1/config endpoint updates the extraction model at runtime: model\u2026",
+      "description": "A new POST /api/v1/config endpoint updates the extraction model at runtime: model session follows the live session model pushed from the plugin whenever it changes, model small reuses opencode's small_model setting, and any other string is a fixed model.",
+      "event_id": "f11",
+      "agent_id": "jev-native",
+      "session_id": "backtest-1",
+      "timestamp": 48.0,
+      "confidence": 0.97,
+      "files": [],
+      "commit": null,
+      "mention_count": 1,
+      "status": "Active"
+    },
+    {
+      "id": "jev-native-f11-3",
+      "node_type": "Decision",
+      "label": "Limitation documented: opencode's auth store including OAuth logins is not exposed to\u2026",
+      "description": "Limitation documented: opencode's auth store including OAuth logins is not exposed to plugins, so extraction uses config or environment API keys.",
+      "event_id": "f11",
+      "agent_id": "jev-native",
+      "session_id": "backtest-1",
+      "timestamp": 48.0,
+      "confidence": 0.97,
+      "files": [],
+      "commit": null,
+      "mention_count": 1,
+      "status": "Active"
+    },
+    {
+      "id": "jev-native-f12-0",
+      "node_type": "OpenItem",
+      "label": "We just had to change the .env file to contain a key\u2026",
+      "description": "We just had to change the .env file to contain a key for OpenRouter with model choice GLM-5.3-flash and endpoint to poe (OpenAI compatible) \u2014 is the key really ANTHROPIC_BASE_URL?",
+      "event_id": "f12",
+      "agent_id": "jev-native",
+      "session_id": "backtest-1",
+      "timestamp": 49.0,
+      "confidence": 0.93,
+      "files": [],
+      "commit": null,
+      "mention_count": 1,
+      "status": "Active"
+    },
+    {
+      "id": "jev-native-f13-0",
+      "node_type": "Decision",
+      "label": "No \u2014 ANTHROPIC_BASE_URL only affects the Anthropic provider.",
+      "description": "No \u2014 ANTHROPIC_BASE_URL only affects the Anthropic provider.",
+      "event_id": "f13",
+      "agent_id": "jev-native",
+      "session_id": "backtest-1",
+      "timestamp": 60.0,
+      "confidence": 0.93,
+      "files": [],
+      "commit": null,
+      "mention_count": 1,
+      "status": "Active"
+    }
+  ],
+  "edges": [],
+  "edge_meta": [],
+  "relations": {},
+  "native": {
+    "per_type": {
+      "decisions": {
+        "gold": 13,
+        "extracted_of_type": 18,
+        "tp": 7,
+        "fp": 11,
+        "fn": 6,
+        "precision": 0.389,
+        "recall": 0.538,
+        "f1": 0.452
+      },
+      "questions": {
+        "gold": 6,
+        "extracted_of_type": 4,
+        "tp": 2,
+        "fp": 2,
+        "fn": 4,
+        "precision": 0.5,
+        "recall": 0.333,
+        "f1": 0.4
+      },
+      "assumptions": {
+        "gold": 3,
+        "extracted_of_type": 4,
+        "tp": 0,
+        "fp": 4,
+        "fn": 3,
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0
+      }
+    },
+    "overall": {
+      "tp": 9,
+      "fp": 17,
+      "fn": 13,
+      "precision": 0.346,
+      "recall": 0.409,
+      "f1": 0.375
+    }
+  },
+  "usage": {
+    "calls": 14,
+    "input_tokens": 21003
+  },
+  "caveat": "gold is self-annotated by the same model family; native mode produces verbatim labels"
+}

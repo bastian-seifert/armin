@@ -1,0 +1,28 @@
+{% if compressed_history %}
+=== COMPRESSED HISTORY ===
+{{ compressed_history }}
+
+{% endif %}
+{% if nodes %}
+=== CURRENT GRAPH STATE (last 50 nodes) ===
+Nodes:
+{% for node in nodes %}
+  {{ node.id }} | {{ node.node_type }} | {{ node.label }} | {{ node.agent_id }} | {{ node.session_id }}
+{% endfor %}
+{% if edges %}
+Edges (source_label → edge_type → target_label):
+{% for edge in edges %}
+  {{ edge.src_label }} → {{ edge.edge_type }} → {{ edge.tgt_label }}
+{% endfor %}
+{% endif %}
+{% else %}
+No nodes in graph yet.
+{% endif %}
+
+=== RECENT CONVERSATION (last 20 events) ===
+{% for utt in history %}
+[{{ "%.1f"|format(utt.start_time) }}s] {{ utt.agent_role }}: {{ utt.text }}
+{% endfor %}
+
+>>> CURRENT EVENT (extract argumentative content from this) <<<
+[{{ "%.1f"|format(utterance.start_time) }}s] {{ utterance.agent_role }}: {{ utterance.text }}

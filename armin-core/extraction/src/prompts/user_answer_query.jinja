@@ -1,0 +1,11 @@
+=== REASONING SUBGRAPH ===
+{% for node in nodes %}
+[{{ node.node_type }}] {{ node.label }} (by {{ node.agent_id }} in {{ node.session_id }}): {{ node.description }}
+{% endfor %}
+{% for edge in edges %}
+{{ edge.src_label }} {{ edge.edge_type }} {{ edge.tgt_label }} — {{ edge.reasoning }}
+{% endfor %}
+
+Question: {{ question }}
+
+Trace the chain of reasoning from evidence through claims to decisions. Cite specific agents and session labels.
