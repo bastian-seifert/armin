@@ -255,3 +255,6 @@ data/backtest/jev-results-sample1.json
 # keep only the in-domain human annotation artifacts
 data/external/*
 !data/external/in_domain/
+
+# npm publish staging (synced from Cargo.toml + plugin at publish time)
+npm/plugins/
