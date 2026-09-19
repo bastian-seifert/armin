@@ -240,7 +240,9 @@ impl JevClient {
     pub fn from_env() -> Result<Self> {
         let api_key = std::env::var("TYPESAFE_AI_API_KEY")
             .or_else(|_| std::env::var("TYPESAFE_API_KEY"))
-            .map_err(|_| anyhow!("no TypeSafe API key: set TYPESAFE_AI_API_KEY"))?;
+            .ok()
+            .filter(|k| !k.trim().is_empty())
+            .ok_or_else(|| anyhow!("no TypeSafe API key: set TYPESAFE_AI_API_KEY"))?;
         let base_url = std::env::var("TYPESAFE_BASE_URL")
             .unwrap_or_else(|_| "https://api.typesafe.ai".to_string());
         let model =

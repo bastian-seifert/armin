@@ -12,6 +12,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 
+use armin_extraction::{ExtractionClient, JevClient};
 use armin_graph::{Bm25Retriever, GraphStore, NodeRetriever};
 use axum::Router;
 use axum::middleware;
@@ -24,6 +25,24 @@ use tracing::{info, warn};
 
 use state::{EngineConfig, ExtractionMode};
 use worker::run as run_worker;
+
+/// Resolve the generative LLM extraction client (Anthropic/OpenAI provider),
+/// wiring the training-data recorder when configured.
+fn resolve_llm_extractor(args: &Args) -> Option<Arc<ExtractionClient>> {
+    match armin_extraction::ExtractionClient::resolve() {
+        Ok(client) => {
+            let client = match &args.training_data {
+                Some(path) => client.with_training_recorder(path),
+                None => client,
+            };
+            Some(Arc::new(client))
+        }
+        Err(e) => {
+            info!("Running deterministic-only: {e}");
+            None
+        }
+    }
+}
 
 #[derive(Parser)]
 #[command(name = "armin-engine", version)]
@@ -101,50 +120,41 @@ async fn main() -> anyhow::Result<()> {
 
     let retriever: Arc<dyn NodeRetriever> = Arc::new(Bm25Retriever::new(graph.clone()));
 
-    // Extraction is optional: without an API key the engine still runs in
-    // deterministic-only mode (tool events → Evidence nodes, agent writes,
-    // queries, analytics).
+    // Extraction setup. Jev (TypeSafe System One) is the default path; the
+    // LLM extractor is the opt-out mode AND the automatic fallback when no
+    // Typesafe key exists. Without any key: deterministic-only (tool-event
+    // capture → scratch, agent writes, queries, analytics, import).
     let config = EngineConfig::from_env();
-    let extractor = if args.deterministic_only || config.extraction_mode == ExtractionMode::Jev {
-        if config.extraction_mode == ExtractionMode::Jev {
-            // Jev mode: prose extraction never touches the generative LLM.
-            // The client may still be resolved for /query answering; if no
-            // LLM key exists, query falls back to graph-only mode.
-            match armin_extraction::ExtractionClient::resolve() {
-                Ok(client) => Some(Arc::new(client)),
-                Err(_) => None,
-            }
-        } else {
-            info!("LLM extraction disabled (--deterministic-only)");
-            None
-        }
-    } else {
-        match armin_extraction::ExtractionClient::resolve() {
-            Ok(client) => {
-                let client = match &args.training_data {
-                    Some(path) => client.with_training_recorder(path),
-                    None => client,
-                };
-                Some(Arc::new(client))
-            }
-            Err(e) => {
-                info!("Running deterministic-only: {e}");
-                None
-            }
-        }
-    };
+    let mut extractor: Option<Arc<ExtractionClient>> = None;
+    let mut jev: Option<Arc<JevClient>> = None;
 
-    let jev = if config.extraction_mode == ExtractionMode::Jev {
-        match armin_extraction::JevClient::from_env() {
-            Ok(client) => Some(Arc::new(client)),
-            Err(e) => {
-                warn!("Jev extraction unavailable ({e}); prose events will be dropped");
-                None
+    if args.deterministic_only {
+        info!("Extraction disabled (--deterministic-only)");
+    } else {
+        match config.extraction_mode {
+            ExtractionMode::Jev => match armin_extraction::JevClient::from_env() {
+                Ok(client) => jev = Some(Arc::new(client)),
+                Err(e) => {
+                    warn!(
+                        "Jev extraction unavailable ({e}) — falling back to LLM \
+                         extraction (set ARMIN_EXTRACTION_MODE=llm to silence)"
+                    );
+                    extractor = resolve_llm_extractor(&args);
+                }
+            },
+            ExtractionMode::Llm => {
+                extractor = resolve_llm_extractor(&args);
             }
         }
-    } else {
-        None
-    };
+    }
+
+    // In jev mode, an LLM client is still resolved when a key exists — for
+    // /query answering only, never for extraction.
+    if jev.is_some() && extractor.is_none() {
+        extractor = armin_extraction::ExtractionClient::resolve()
+            .ok()
+            .map(Arc::new);
+    }
 
     // Background extraction worker: prose events flow through this channel
     // and are batched before hitting the extractor.

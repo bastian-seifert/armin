@@ -28,7 +28,13 @@ fn now_ts() -> f64 {
 pub async fn health(State(state): State<EngineState>) -> impl IntoResponse {
     Json(json!({
         "status": "ok",
-        "extraction": if state.extractor.is_some() { "llm" } else { "deterministic-only" },
+        "extraction": if state.jev.is_some() {
+            "jev"
+        } else if state.extractor.is_some() {
+            "llm"
+        } else {
+            "deterministic-only"
+        },
         "db": state.db_path.as_ref().map(|p| p.display().to_string()),
         "sessions": state.sessions.read().await.len(),
     }))

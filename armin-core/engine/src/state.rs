@@ -12,20 +12,26 @@ use crate::metrics::Metrics;
 /// Which engine extracts prose into graph nodes.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum ExtractionMode {
-    /// Generative extraction LLM (poe/OpenAI/Anthropic), verified by
-    /// deterministic gates.
-    #[default]
-    Llm,
     /// TypeSafe System One (Jev) native pipeline: per-sentence typed
     /// judgments, verbatim nodes, pairwise edges. No generative LLM.
+    /// THE DEFAULT: verbatim nodes are hallucination-proof by construction,
+    /// and Jev judgment calls are cheaper than a generative extraction call.
+    #[default]
     Jev,
+    /// Opt-out: generative extraction LLM (poe/OpenAI/Anthropic). Also the
+    /// automatic fallback when Jev is requested but no Typesafe key exists.
+    Llm,
 }
 
 impl ExtractionMode {
     fn from_env() -> Self {
-        match std::env::var("ARMIN_EXTRACTION_MODE").unwrap_or_default().as_str() {
-            "jev" => Self::Jev,
-            _ => Self::Llm,
+        match std::env::var("ARMIN_EXTRACTION_MODE")
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "llm" => Self::Llm,
+            _ => Self::Jev, // default; "jev" and unset both land here
         }
     }
 }

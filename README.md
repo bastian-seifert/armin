@@ -71,7 +71,9 @@ export ARMIN_ENABLED=1
 # optional knobs:
 # ARMIN_ENGINE_BIN=~/.local/bin/armin-engine
 # ARMIN_MODEL=...                extraction model override
-# ARMIN_EXTRACTION_MODE=llm|jev  (default: llm; jev needs TYPESAFE_AI_API_KEY)
+# ARMIN_EXTRACTION_MODE=llm|jev  (default: jev — TypeSafe AI, verbatim nodes;
+#                                 set llm to opt out; without a Typesafe key
+#                                 the engine falls back to LLM automatically)
 # ARMIN_BATCH_MS=15000           extraction debounce window
 # ARMIN_BATCH_EVENTS=10          events per extraction call
 # ARMIN_DB_DIR=~/.opencode/armin graph storage (per-project, keyed by git origin)

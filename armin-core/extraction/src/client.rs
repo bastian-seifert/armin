@@ -17,11 +17,17 @@ use crate::trainer::{OperationType, TrainingRecord, TrainingRecorder};
 
 const MIN_WORDS_FOR_EXTRACTION: usize = 5;
 
+fn nonempty(var: Result<String, std::env::VarError>) -> Result<String> {
+    var.ok()
+        .filter(|k| !k.trim().is_empty())
+        .ok_or_else(|| anyhow!("API key is unset or empty"))
+}
+
 fn api_key_for(provider_name: &str) -> Result<String> {
     match provider_name {
-        "openai" => std::env::var("OPENAI_API_KEY")
+        "openai" => nonempty(std::env::var("OPENAI_API_KEY"))
             .map_err(|_| anyhow!("LLM_PROVIDER=openai but OPENAI_API_KEY is not set")),
-        _ => std::env::var("ANTHROPIC_API_KEY")
+        _ => nonempty(std::env::var("ANTHROPIC_API_KEY"))
             .map_err(|_| anyhow!("LLM_PROVIDER=anthropic but ANTHROPIC_API_KEY is not set")),
     }
 }
@@ -75,8 +81,8 @@ impl ExtractionClient {
     /// is present, defaulting to anthropic.
     pub fn resolve() -> Result<Self> {
         let provider_name = std::env::var("LLM_PROVIDER").unwrap_or_default();
-        let anthropic_key = std::env::var("ANTHROPIC_API_KEY").ok();
-        let openai_key = std::env::var("OPENAI_API_KEY").ok();
+        let anthropic_key = std::env::var("ANTHROPIC_API_KEY").ok().filter(|k| !k.trim().is_empty());
+        let openai_key = std::env::var("OPENAI_API_KEY").ok().filter(|k| !k.trim().is_empty());
 
         let (provider_name, api_key) = match provider_name.as_str() {
             "openai" => ("openai", api_key_for("openai")?),

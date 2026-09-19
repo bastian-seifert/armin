@@ -15,17 +15,17 @@ use armin_ingest::EventRecord;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tracing::{debug, info, warn};
 
-use crate::state::{EngineState, ExtractionMode};
+use crate::state::EngineState;
 
 /// Run the worker until the channel closes (i.e. the engine shuts down).
 pub async fn run(state: EngineState, mut rx: UnboundedReceiver<EventRecord>) {
     info!(
-        "Extraction worker started: mode={:?} batch_ms={} batch_events={} extractor={} jev_model={}",
-        state.config.extraction_mode,
+        "Extraction worker started: mode={} batch_ms={} batch_events={} jev_model={} llm_extractor={}",
+        if state.jev.is_some() { "jev" } else { "llm" },
         state.config.batch_ms,
         state.config.batch_events,
-        state.extractor.as_ref().map(|e| e.model_name()).unwrap_or_else(|| "none".into()),
         state.jev.as_ref().map(|j| j.model().to_string()).unwrap_or_else(|| "none".into()),
+        state.extractor.as_ref().map(|e| e.model_name()).unwrap_or_else(|| "none".into()),
     );
 
     loop {
@@ -63,9 +63,17 @@ async fn process_batch(state: &EngineState, batch: &[EventRecord]) {
         return;
     }
 
-    match state.config.extraction_mode {
-        ExtractionMode::Jev => process_batch_jev(state, batch).await,
-        ExtractionMode::Llm => process_batch_llm(state, batch).await,
+    // Jev is the preferred path; the LLM extractor is the opt-out mode AND
+    // the automatic fallback when no Typesafe key is configured.
+    if state.jev.is_some() {
+        process_batch_jev(state, batch).await;
+    } else if state.extractor.is_some() {
+        process_batch_llm(state, batch).await;
+    } else {
+        warn!(
+            "No extractor available (jev needs TYPESAFE_AI_API_KEY, llm needs              ANTHROPIC/OPENAI_API_KEY) — dropping batch of {}",
+            batch.len()
+        );
     }
 }
 
