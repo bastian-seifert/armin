@@ -23,13 +23,14 @@ The graph holds only what a **future session** needs to keep the codebase consis
 | Node | Edit-time question it answers |
 |---|---|
 | `Decision` | Was this decided before — and why? |
+| `Rule` | What binds this file/module — conventions, constraints, requirements? |
 | `OpenItem` | What is known broken, unfinished, or unresolved? |
 
 Everything else a session produces is *episodic*: it lives in pipeline scratch (in-memory, per session), feeds the live debt view, and either gets promoted into a durable node or dies with the session. Tool calls are never nodes — read tools become provenance (`event_id`, files, commit) attached to durable knowledge; mutating and verifying calls land in scratch.
 
-Edges: `Supersedes`, `Refutes`, `Resolves`, `RelatesTo`. Debt detection is graph-internal (`UnresolvedOpenItem`) plus cross-layer checks against session activity (`UnverifiedChange`, `FailedVerification` — scratch layer, in progress).
+Edges: `Supersedes`, `Refutes`, `Resolves`, `RelatesTo`. Debt detection is graph-internal (`UnresolvedOpenItem`) plus cross-layer checks against session activity: `UnverifiedChange` (edited, never tested), `FailedVerification` (failing check, no fix attempted), and `RuleViolation` (failed check on files covered by a Rule).
 
-The taxonomy is deliberately minimal and measured: `Rule` (binding conventions), `Fact` (verified gotchas) and `Lesson` (tried-and-failed) are documented future extensions — see `armin-core/graph/src/types.rs` and the backtest evidence in `data/backtest/`.
+The taxonomy is deliberately minimal and measured. `Rule` exists for deterministic paths — doc import and the scoped brief — but is *not* extracted from prose yet; `Fact` (verified gotchas) and `Lesson` (tried-and-failed) remain documented future extensions. Rationale and evidence: `armin-core/graph/src/types.rs`, `data/backtest/`.
 
 ---
 
@@ -41,8 +42,10 @@ opencode session
     ▼
 plugin (.opencode/plugins/armin.ts)
 ├── CAPTURE  tool calls + prose → engine /ingest (no added latency)
-├── EXTRACT  background batches: TypeSafe System One judgments (jev-native,
-│            verbatim sentences, select-don't-generate) or a cheap LLM
+├── EXTRACT  background batches: TypeSafe System One judgments by default
+│            (jev: verbatim sentences, select-don't-generate — hallucinated
+│            memory is impossible); generative LLM is the opt-out and the
+│            automatic fallback when no Typesafe key is set
 ├── PUSH     reasoning-state brief every turn + into compaction context
 └── ENGINE   per-project graph DB (sled), keyed by git origin remote —
              memory follows the project, not the checkout
@@ -86,7 +89,7 @@ First run in a project: if an `AGENTS.md` or `CLAUDE.md` exists, ARMIN imports i
 
 **Inspect the graph**: the engine serves a live status page at `http://127.0.0.1:<port>/ui` (the plugin logs the URL at startup with `ARMIN_DEBUG=1`).
 
-Cost/latency model: tool calls are captured with **zero** LLM calls; prose is batched (one cheap call per 15s window by default); the brief is computed in Rust (<10ms). The agent's turns never wait on the graph. Without any API key you still get capture, unverified-edit/failing-check warnings and agent writes — everything else needs extraction.
+Cost/latency model: tool calls are captured with **zero** LLM calls; prose is batched (one cheap call per 15s window by default); the brief is computed in Rust (<10ms). The agent's turns never wait on the graph. Without any API key you still get capture, unverified-edit/failing-check warnings, agent writes and the AGENTS.md import — everything else needs extraction.
 
 **Editing with memory**: the brief gains a "Binding here" section — decisions and rules scoped to the files you have been editing — and a standing instruction: if a new request conflicts with a remembered decision, say so explicitly before deviating.
 
@@ -101,12 +104,14 @@ Every turn, the engine renders a compact block that is injected into the agent's
 Decisions (4):
 - [Validated] Use JWT for the auth gateway
 - ...
+Rules (1):
+- You must never print timestamps in CLI output
 Open items (2):
 - Open item 'Refresh-token rotation needed?' raised by agent has not been resolved
 </reasoning-state>
 ```
 
-It carries only the durable set — settled decisions and unresolved threads — which is what the A/B study below tested.
+It carries only the durable set — settled decisions, binding rules, unresolved threads — which is what the A/B study below tested.
 
 ---
 
@@ -120,7 +125,7 @@ Result (N=6 paired middleware runs, alternating which option the session-1 stand
 |---|---|---|
 | cross-session consistency | **6/6 (100%)** | 4/6 (67%) |
 
-Without memory, agents reverted to their natural preference exactly when the remembered choice was anti-prior — and never noticed the conflict. With the brief, sessions cited it as evidence ("a prior decision already tracks this"). Full protocol, per-pair results, and the power analysis: **`scripts/abtest/README.md`**.
+Without memory, agents reverted to their natural preference exactly when the remembered choice was anti-prior — and never noticed the conflict. With the brief, sessions cited it as evidence ("a prior decision already tracks this"). Full protocol, per-pair results, and the power analysis: **`scripts/abtest/README.md`**. (The study ran on the pre-v0.1 engine; a fresh middleware pair on v0.1 reproduced the discrimination exactly.)
 
 `data/backtest/` holds the extraction backtest corpus (a real design conversation + hand annotations + the current result artifact).
 
@@ -136,7 +141,7 @@ cargo run -p armin-server -- \
 cd frontend && npm install && npm run dev   # http://localhost:5173
 ```
 
-Events can be pushed via `POST /ingest` instead of `--stream`. Provider selection: `LLM_PROVIDER=openai` + `OPENAI_API_KEY`, or Anthropic by default. `LLM_MODEL` overrides the model.
+Events can be pushed via `POST /ingest` instead of `--stream`. Provider selection: `LLM_PROVIDER=openai` + `OPENAI_API_KEY`, or Anthropic by default. `LLM_MODEL` overrides the model. (The demo server runs generative extraction; the middleware defaults to jev.)
 
 ### Server flags
 
@@ -155,7 +160,9 @@ Events can be pushed via `POST /ingest` instead of `--stream`. Provider selectio
 | Endpoint | Purpose |
 |----------|---------|
 | `POST /api/v1/ingest` | Batch-ingest events |
-| `GET /api/v1/state/brief` | Compact reasoning-state markdown for prompt injection |
+| `GET /api/v1/state/brief?files=a.rs` | Reasoning-state brief; `files=` scopes a "Binding here" section |
+| `POST /api/v1/import` | Deterministic AGENTS.md/CLAUDE.md import (idempotent) |
+| `GET /ui` | Live status page (graph, debt, brief preview) |
 | `POST /api/v1/query` | Deterministic graph query (BM25 + trace + template answer) |
 | `POST /api/v1/agent/decision` / `question` / `resolve` / `invalidate` | Agent writes |
 | `GET /api/v1/debt` `/decisions` `/risks` `/summary` `/communities` | Analytics |
