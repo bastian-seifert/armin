@@ -37,12 +37,51 @@ if [[ ! -x "$BIN" ]]; then
     exit 1
 fi
 
-# 2. Ask for the Typesafe key (jev is the default extraction mode); it goes
-#    into the opencode config — the plugin passes it to the sidecar.
+# 2. Extraction backend: jev (System One judgments) is the default. Ask
+#    which relay to use and for the matching key; it goes into the opencode
+#    config — the plugin passes it to the sidecar. A provider detected from
+#    the environment skips the prompt entirely.
 TS_KEY_INPUT=""
-if [[ -z "${TYPESAFE_AI_API_KEY:-}" && -t 0 ]]; then
-    read -r -p "TypeSafe System One API key (jev extraction is the default) — paste, or Enter to skip: " \
-        TS_KEY_INPUT || TS_KEY_INPUT=""
+OR_KEY_INPUT=""
+WRITE_JEV_PROVIDER=""
+if [[ -n "${ARMIN_JEV_PROVIDER:-}" ]]; then
+    provider="${ARMIN_JEV_PROVIDER}"
+elif [[ -n "${TYPESAFE_AI_API_KEY:-}" ]]; then
+    provider="typesafe"
+elif [[ -n "${OPENROUTER_API_KEY:-}" ]]; then
+    provider="openrouter"
+else
+    provider=""
+fi
+
+if [[ -t 0 ]]; then
+    if [[ -z "$provider" ]]; then
+        echo
+        echo "Extraction backend (jev is the default — verbatim nodes, no generative LLM):"
+        echo "  1) TypeSafe System One (typesafe.ai)  [default]"
+        echo "  2) Jev via OpenRouter (openrouter.ai — same API, OpenRouter billing)"
+        echo "  3) skip (LLM fallback / deterministic-only)"
+        read -r -p "Choose [1/2/3, Enter=1]: " BACKEND_CHOICE || BACKEND_CHOICE=""
+        case "${BACKEND_CHOICE:-1}" in
+            2) provider="openrouter" ;;
+            3) provider="skip" ;;
+            *) provider="typesafe" ;;
+        esac
+    fi
+    if [[ "$provider" == "typesafe" && -z "${TYPESAFE_AI_API_KEY:-}" ]]; then
+        read -r -p "TypeSafe System One API key — paste, or Enter to skip: " \
+            TS_KEY_INPUT || TS_KEY_INPUT=""
+    elif [[ "$provider" == "openrouter" && -z "${OPENROUTER_API_KEY:-}" ]]; then
+        read -r -p "OpenRouter API key (openrouter.ai/settings/keys) — paste, or Enter to skip: " \
+            OR_KEY_INPUT || OR_KEY_INPUT=""
+    fi
+fi
+
+# The provider choice is persisted only when the user explicitly picked
+# OpenRouter in the prompt (env-detected providers drive the sidecar via
+# their env vars; writing nothing avoids overriding that later).
+if [[ "${BACKEND_CHOICE:-}" == "2" ]]; then
+    WRITE_JEV_PROVIDER="openrouter"
 fi
 
 # 3. Register the plugin in the global opencode config so EVERY project
@@ -55,7 +94,8 @@ CFG_JSONC="$CFG_DIR/opencode.jsonc"
 
 register_plugin() {
     local cfg="$1"
-    TS_KEY_INPUT="$TS_KEY_INPUT" python3 - "$cfg" "$PLUGIN_PATH" <<'PYEOF'
+    TS_KEY_INPUT="$TS_KEY_INPUT" OR_KEY_INPUT="$OR_KEY_INPUT" \
+    WRITE_JEV_PROVIDER="$WRITE_JEV_PROVIDER" python3 - "$cfg" "$PLUGIN_PATH" <<'PYEOF'
 import json, re, sys, os
 cfg, plugin = sys.argv[1], sys.argv[2]
 text = open(cfg).read() if os.path.exists(cfg) else ""
@@ -75,14 +115,24 @@ if entry not in plugins:
     plugins.append(entry)
     data["plugin"] = plugins
     changed = True
+armin = data.get("armin") or {}
 ts_input = os.environ.get("TS_KEY_INPUT", "").strip()
 if ts_input and not os.environ.get("TYPESAFE_AI_API_KEY"):
-    armin = data.get("armin") or {}
     if armin.get("typesafeKey") != ts_input:
         armin["typesafeKey"] = ts_input
-        data["armin"] = armin
         changed = True
+or_input = os.environ.get("OR_KEY_INPUT", "").strip()
+if or_input and not os.environ.get("OPENROUTER_API_KEY"):
+    if armin.get("openrouterKey") != or_input:
+        armin["openrouterKey"] = or_input
+        changed = True
+provider = os.environ.get("WRITE_JEV_PROVIDER", "").strip()
+if provider and armin.get("jevProvider") != provider:
+    armin["jevProvider"] = provider
+    changed = True
 if changed:
+    data["armin"] = armin
+    os.makedirs(os.path.dirname(cfg), exist_ok=True)
     with open(cfg, "w") as f:
         json.dump(data, f, indent=2)
     print(f"plugin registered in {cfg}")
@@ -122,19 +172,23 @@ else
     echo "warning: engine health check did not complete (it may still work)"
 fi
 
-# 4. Extraction-mode status: jev (default) needs a Typesafe key.
+# 5. Extraction-mode status: jev (default) needs a Typesafe or OpenRouter key.
 echo "checking extraction setup ..."
 if [[ -n "${TYPESAFE_AI_API_KEY:-}" || -n "${TS_KEY_INPUT:-}" ]]; then
     echo "extraction: jev (TypeSafe System One) — ready"
+elif [[ -n "${OPENROUTER_API_KEY:-}" || -n "${OR_KEY_INPUT:-}" ]]; then
+    echo "extraction: jev via OpenRouter — ready"
 elif [[ -n "${ANTHROPIC_API_KEY:-}" || -n "${OPENAI_API_KEY:-}" ]]; then
-    echo "extraction: LLM fallback — jev is the default but no Typesafe key is set."
-    echo "  Get a key at typesafe.ai and export TYPESAFE_AI_API_KEY (or put"
-    echo '  "armin": { "typesafeKey": "..." } in your opencode config).'
+    echo "extraction: LLM fallback — jev is the default but no key for it is set."
+    echo "  Set TYPESAFE_AI_API_KEY (typesafe.ai) or OPENROUTER_API_KEY (openrouter.ai),"
+    echo "  or put \"armin\": { \"typesafeKey\": \"...\" } / { \"jevProvider\": \"openrouter\","
+    echo '  "openrouterKey": "..." } in your opencode config.'
 else
     echo "extraction: NONE (deterministic-only) — import, capture and unverified-edit"
     echo "  warnings work; prose extraction does not."
-    echo "  Set TYPESAFE_AI_API_KEY (typesafe.ai) for jev extraction — the default —"
-    echo "  or ANTHROPIC_API_KEY / OPENAI_API_KEY for LLM fallback."
+    echo "  Set TYPESAFE_AI_API_KEY (typesafe.ai) or OPENROUTER_API_KEY (openrouter.ai)"
+    echo "  for jev extraction — the default — or ANTHROPIC_API_KEY / OPENAI_API_KEY"
+    echo "  for LLM fallback."
 fi
 
 cat <<EOF
@@ -145,7 +199,12 @@ Enable ARMIN per environment:
     export ARMIN_ENABLED=1
 
 Optional knobs:
-    ARMIN_EXTRACTION_MODE=jev      TypeSafe System One (needs TYPESAFE_AI_API_KEY)
+    ARMIN_EXTRACTION_MODE=jev      System One extraction (default; needs
+                                   TYPESAFE_AI_API_KEY or OPENROUTER_API_KEY)
+    ARMIN_JEV_PROVIDER=openrouter  route jev via OpenRouter (auto-detected
+                                   when only that key is set)
+    ARMIN_JEV_MODEL=<model>        jev model override (default jev-1.13.0,
+                                   or jev-latest via OpenRouter)
     ARMIN_MODEL=<model>            extraction model override (llm mode)
     ARMIN_DB_DIR=~/.opencode/armin graph storage (per project)
     ARMIN_DEBUG=1                  verbose plugin logging

@@ -18,6 +18,11 @@
  *       "apiKey": "sk-...",               // sent to the sidecar only; env key wins if both set
  *       "typesafeKey": "...",             // Typesafe System One key (jev is the
  *                                         // default extraction mode); env wins
+ *       "jevProvider": "typesafe",        // typesafe | openrouter — which relay serves
+ *                                         // the System One API (openrouter bills
+ *                                         // your OpenRouter account); env wins
+ *       "openrouterKey": "sk-or-...",     // OpenRouter key, used when jevProvider is
+ *                                         // "openrouter"; env wins
  *       "model": "session",               // "session" = follow the live session model
  *                                         // "small"  = reuse opencode's small_model setting
  *                                         // any string = fixed extraction model
@@ -496,6 +501,12 @@ const ArminPlugin: Plugin = async (ctx) => {
   // passed to the sidecar only; a key already in the environment wins.
   const typesafeKey = cfgStr("typesafeKey", "TYPESAFE_AI_API_KEY")
   if (typesafeKey) spawnEnv.TYPESAFE_AI_API_KEY = typesafeKey
+  // Jev relay: "typesafe" (api.typesafe.ai, default) or "openrouter"
+  // (openrouter.ai/api — same System One API, OpenRouter billing).
+  const jevProvider = cfgStr("jevProvider", "ARMIN_JEV_PROVIDER")
+  if (jevProvider) spawnEnv.ARMIN_JEV_PROVIDER = jevProvider
+  const openrouterKey = cfgStr("openrouterKey", "OPENROUTER_API_KEY")
+  if (openrouterKey) spawnEnv.OPENROUTER_API_KEY = openrouterKey
   // API key: config value is passed to the sidecar only; a key already in
   // the environment wins (no override).
   if (typeof armin.apiKey === "string" && armin.apiKey) {
@@ -529,21 +540,25 @@ const ArminPlugin: Plugin = async (ctx) => {
   // between "memory works" and a silent deterministic downgrade.
   void (async () => {
     try {
-      const health = await api.get<{ extraction: string }>("/health")
+      const health = await api.get<{ extraction: string; jev_provider?: string }>("/health")
       const mode = health?.extraction ?? "unknown"
       if (mode === "jev") {
-        log(`extraction: jev (TypeSafe System One) — ready`)
+        const via = health?.jev_provider ?? "typesafe"
+        log(`extraction: jev (System One via ${via}) — ready`)
       } else if (mode === "llm") {
         log(
-          `extraction: llm (fallback) — jev is the default but no Typesafe key is ` +
-            `configured. Set TYPESAFE_AI_API_KEY in your environment or ` +
-            `"armin": { "typesafeKey": "..." } in your opencode config.`,
+          `extraction: llm (fallback) — jev is the default but no key is ` +
+            `configured. Set TYPESAFE_AI_API_KEY (typesafe.ai) or OPENROUTER_API_KEY ` +
+            `(openrouter.ai) in your environment, or \`"armin": { "typesafeKey": "..." }\`` +
+            ` / \`{ "jevProvider": "openrouter", "openrouterKey": "..." }\` in your ` +
+            `opencode config.`,
         )
       } else {
         log(
           `extraction: deterministic-only — no API keys found. Import and ` +
             `unverified-edit warnings work; prose extraction does not. Set ` +
-            `TYPESAFE_AI_API_KEY (or ANTHROPIC/OPENAI_API_KEY) to enable it.`,
+            `TYPESAFE_AI_API_KEY or OPENROUTER_API_KEY (or ANTHROPIC/OPENAI_API_KEY) ` +
+            `to enable it.`,
         )
       }
     } catch {

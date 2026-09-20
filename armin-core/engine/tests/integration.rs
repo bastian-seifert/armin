@@ -200,7 +200,7 @@ fn engine_sidecar_end_to_end() {
         assert!(brief_text.contains("Unverified edits"), "brief: {brief_text}");
 
         // A passing test run over the same file clears the warning.
-        let resp = post(
+        let _resp = post(
             &engine,
             "/ingest",
             json!([{

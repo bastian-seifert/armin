@@ -35,6 +35,7 @@ pub async fn health(State(state): State<EngineState>) -> impl IntoResponse {
         } else {
             "deterministic-only"
         },
+        "jev_provider": state.jev.as_ref().map(|j| j.provider()),
         "db": state.db_path.as_ref().map(|p| p.display().to_string()),
         "sessions": state.sessions.read().await.len(),
     }))

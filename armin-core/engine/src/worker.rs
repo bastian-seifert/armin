@@ -20,10 +20,11 @@ use crate::state::EngineState;
 /// Run the worker until the channel closes (i.e. the engine shuts down).
 pub async fn run(state: EngineState, mut rx: UnboundedReceiver<EventRecord>) {
     info!(
-        "Extraction worker started: mode={} batch_ms={} batch_events={} jev_model={} llm_extractor={}",
+        "Extraction worker started: mode={} batch_ms={} batch_events={} jev={}/{} llm_extractor={}",
         if state.jev.is_some() { "jev" } else { "llm" },
         state.config.batch_ms,
         state.config.batch_events,
+        state.jev.as_ref().map(|j| j.provider()).unwrap_or("none"),
         state.jev.as_ref().map(|j| j.model().to_string()).unwrap_or_else(|| "none".into()),
         state.extractor.as_ref().map(|e| e.model_name()).unwrap_or_else(|| "none".into()),
     );

@@ -95,25 +95,41 @@ function buildFromSource() {
 }
 
 let pendingTypesafeKey = null;
+let pendingOpenrouterKey = null;
+let pendingJevProvider = null; // "openrouter" | "skip" | null (typesafe needs no config entry)
 
-/** Ask for the Typesafe key when nothing is configured (TTY only; the key
- * goes into the opencode config — the plugin passes it to the sidecar). */
-function askForTypesafeKey() {
-  if (process.env.TYPESAFE_AI_API_KEY) return Promise.resolve();
-  if (!process.stdin.isTTY) return Promise.resolve();
+/** Ask which relay serves Jev and for the matching key (TTY only; values
+ * go into the opencode config — the plugin passes them to the sidecar).
+ * A provider detected from the environment skips the prompt entirely. */
+async function askForExtractionSetup() {
+  if (!process.stdin.isTTY) return;
+  let provider;
+  if (process.env.ARMIN_JEV_PROVIDER) provider = process.env.ARMIN_JEV_PROVIDER;
+  else if (process.env.TYPESAFE_AI_API_KEY) provider = "typesafe";
+  else if (process.env.OPENROUTER_API_KEY) provider = "openrouter";
+  if (provider) return;
+
   const readline = require("readline");
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  return new Promise((resolve) => {
-    rl.question(
-      "TypeSafe System One API key (jev extraction is the default) — paste, or Enter to skip: ",
-      (answer) => {
-        rl.close();
-        const key = (answer || "").trim();
-        if (key) pendingTypesafeKey = key;
-        resolve();
-      },
-    );
-  });
+  const ask = (q) => new Promise((resolve) => rl.question(q, resolve));
+  try {
+    console.log("\nExtraction backend (jev is the default — verbatim nodes, no generative LLM):");
+    console.log("  1) TypeSafe System One (typesafe.ai)  [default]");
+    console.log("  2) Jev via OpenRouter (openrouter.ai — same API, OpenRouter billing)");
+    console.log("  3) skip (LLM fallback / deterministic-only)");
+    const choice = ((await ask("Choose [1/2/3, Enter=1]: ")) || "1").trim();
+    if (choice === "3") { pendingJevProvider = "skip"; return; }
+    if (choice === "2") {
+      pendingJevProvider = "openrouter";
+      const key = ((await ask("OpenRouter API key (openrouter.ai/settings/keys) — paste, or Enter to skip: ")) || "").trim();
+      if (key) pendingOpenrouterKey = key;
+    } else {
+      const key = ((await ask("TypeSafe System One API key — paste, or Enter to skip: ")) || "").trim();
+      if (key) pendingTypesafeKey = key;
+    }
+  } finally {
+    rl.close();
+  }
 }
 
 function registerPlugin() {
@@ -148,6 +164,17 @@ function registerPlugin() {
     data.armin = { ...(data.armin || {}), typesafeKey: pendingTypesafeKey };
     changed = true;
   }
+  if (pendingOpenrouterKey && !process.env.OPENROUTER_API_KEY) {
+    data.armin = { ...(data.armin || {}), openrouterKey: pendingOpenrouterKey };
+    changed = true;
+  }
+  // Persist the relay choice only when the user explicitly picked
+  // OpenRouter in the prompt (env-detected providers drive the sidecar
+  // via their env vars; writing nothing avoids overriding that later).
+  if (pendingJevProvider === "openrouter" && data.armin.jevProvider !== "openrouter") {
+    data.armin = { ...(data.armin || {}), jevProvider: "openrouter" };
+    changed = true;
+  }
   if (changed) {
     fs.mkdirSync(cfgDir, { recursive: true });
     fs.writeFileSync(cfgPath, JSON.stringify(data, null, 2));
@@ -174,24 +201,29 @@ async function install() {
       }
     }
   }
-  await askForTypesafeKey();
+  await askForExtractionSetup();
   registerPlugin();
   const tsKey = process.env.TYPESAFE_AI_API_KEY || pendingTypesafeKey;
+  const orKey = process.env.OPENROUTER_API_KEY || pendingOpenrouterKey;
   const llmKey = process.env.ANTHROPIC_API_KEY || process.env.OPENAI_API_KEY;
   if (tsKey) {
     console.log("extraction: jev (TypeSafe System One) — ready");
+  } else if (orKey) {
+    console.log("extraction: jev via OpenRouter — ready");
   } else if (llmKey) {
     console.log(
-      "extraction: LLM fallback — jev is the default but no Typesafe key is set.\n" +
-        "  Get a key at typesafe.ai and export TYPESAFE_AI_API_KEY (or put\n" +
-        '  "armin": { "typesafeKey": "..." } in your opencode config).',
+      "extraction: LLM fallback — jev is the default but no key for it is set.\n" +
+        "  Set TYPESAFE_AI_API_KEY (typesafe.ai) or OPENROUTER_API_KEY (openrouter.ai),\n" +
+        '  or put "armin": { "typesafeKey": "..." } / { "jevProvider": "openrouter",\n' +
+        '  "openrouterKey": "..." } in your opencode config.',
     );
   } else {
     console.log(
       "extraction: NONE (deterministic-only) — import, capture and unverified-edit\n" +
         "  warnings work; prose extraction does not.\n" +
-        "  Set TYPESAFE_AI_API_KEY (typesafe.ai) for jev extraction — the default —\n" +
-        "  or ANTHROPIC_API_KEY / OPENAI_API_KEY for LLM fallback.",
+        "  Set TYPESAFE_AI_API_KEY (typesafe.ai) or OPENROUTER_API_KEY (openrouter.ai)\n" +
+        "  for jev extraction — the default — or ANTHROPIC_API_KEY / OPENAI_API_KEY\n" +
+        "  for LLM fallback.",
     );
   }
   console.log(`
@@ -201,7 +233,12 @@ Enable ARMIN per environment:
     export ARMIN_ENABLED=1
 
 Optional:
-    ARMIN_EXTRACTION_MODE=jev      TypeSafe System One extraction
+    ARMIN_EXTRACTION_MODE=jev      System One extraction (default; needs
+                                   TYPESAFE_AI_API_KEY or OPENROUTER_API_KEY)
+    ARMIN_JEV_PROVIDER=openrouter  route jev via OpenRouter (auto-detected
+                                   when only that key is set)
+    ARMIN_JEV_MODEL=<model>        jev model override (default jev-1.13.0,
+                                   or jev-latest via OpenRouter)
     ARMIN_MODEL=<model>            extraction model override
     ARMIN_DEBUG=1                  verbose logging + /ui URL
 `);

@@ -165,11 +165,85 @@ impl JevNativeConfig {
     }
 }
 
+// ── Provider routing ─────────────────────────────────────────────────────────
+
+/// Which relay serves the System One API. Both implement the identical
+/// `{state, model, questions} → answers` shape, so only endpoint and
+/// credentials differ.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum JevProvider {
+    /// api.typesafe.ai direct.
+    Typesafe,
+    /// OpenRouter relay (`openrouter.ai/api`): billed to the OpenRouter
+    /// account; bare model ids (`jev-latest`) map to the `typesafe/`
+    /// namespace (`~typesafe/jev-latest`), prefixed ids pass through.
+    OpenRouter,
+}
+
+impl JevProvider {
+    pub const DEFAULT_TYPESAFE_BASE: &'static str = "https://api.typesafe.ai";
+    pub const DEFAULT_OPENROUTER_BASE: &'static str = "https://openrouter.ai/api";
+    pub const DEFAULT_TYPESAFE_MODEL: &'static str = "jev-1.13.0";
+    /// OpenRouter's alias for the newest Jev release.
+    pub const DEFAULT_OPENROUTER_MODEL: &'static str = "jev-latest";
+
+    /// Name as used in `ARMIN_JEV_PROVIDER` and in logs.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Typesafe => "typesafe",
+            Self::OpenRouter => "openrouter",
+        }
+    }
+}
+
+/// Resolve which provider to use. An explicit `ARMIN_JEV_PROVIDER` value
+/// wins (unknown values are an error — a typo must not silently downgrade
+/// to another relay); unset picks the provider whose key is present,
+/// preferring Typesafe to preserve the pre-OpenRouter behavior when both
+/// keys exist. `None` means no key at all.
+pub fn resolve_provider(
+    explicit: Option<&str>,
+    has_typesafe_key: bool,
+    has_openrouter_key: bool,
+) -> Result<Option<JevProvider>, String> {
+    match explicit.map(str::trim).filter(|v| !v.is_empty()).map(|v| v.to_ascii_lowercase()) {
+        Some(ref v) if v == "typesafe" => Ok(Some(JevProvider::Typesafe)),
+        Some(ref v) if v == "openrouter" => Ok(Some(JevProvider::OpenRouter)),
+        Some(v) => Err(format!(
+            "unknown ARMIN_JEV_PROVIDER={v:?} (expected 'typesafe' or 'openrouter')"
+        )),
+        None => Ok(
+            if has_typesafe_key {
+                Some(JevProvider::Typesafe)
+            } else if has_openrouter_key {
+                Some(JevProvider::OpenRouter)
+            } else {
+                None
+            },
+        ),
+    }
+}
+
+/// Base-URL tolerance: users frequently paste URLs with a trailing slash or
+/// a `/v1` suffix (the client appends `/v1/systemone` itself).
+pub fn normalize_jev_base(base: &str) -> String {
+    let mut b = base.trim().trim_end_matches('/').to_string();
+    if b.ends_with("/v1") {
+        b.truncate(b.len() - 3);
+    }
+    b
+}
+
+fn env_key(name: &str) -> Option<String> {
+    std::env::var(name).ok().filter(|k| !k.trim().is_empty())
+}
+
 // ── HTTP client ───────────────────────────────────────────────────────────────
 
 /// Minimal TypeSafe System One client: one endpoint, bearer auth, retry
 /// with backoff on 429/529/5xx, token metering.
 pub struct JevClient {
+    provider: JevProvider,
     http: reqwest::Client,
     api_key: String,
     base_url: String,
@@ -234,29 +308,68 @@ pub struct JevUsage {
 }
 
 impl JevClient {
-    /// Build a client from the environment. Requires `TYPESAFE_AI_API_KEY`
-    /// (or `TYPESAFE_API_KEY`); optional `TYPESAFE_BASE_URL` and
-    /// `ARMIN_JEV_MODEL` (default `jev-1.13.0`).
+    /// Build a client from the environment.
+    ///
+    /// Provider: `ARMIN_JEV_PROVIDER` (`typesafe`|`openrouter`) wins;
+    /// otherwise auto-detected from whichever key is set (Typesafe first).
+    /// - typesafe: `TYPESAFE_AI_API_KEY` (or `TYPESAFE_API_KEY`), base
+    ///   `TYPESAFE_BASE_URL`, default model `jev-1.13.0`
+    /// - openrouter: `OPENROUTER_API_KEY`, base `ARMIN_JEV_BASE_URL`,
+    ///   default model `jev-latest` (routes to `~typesafe/jev-latest`)
+    ///
+    /// `ARMIN_JEV_MODEL` overrides the default for either provider.
     pub fn from_env() -> Result<Self> {
-        let api_key = std::env::var("TYPESAFE_AI_API_KEY")
-            .or_else(|_| std::env::var("TYPESAFE_API_KEY"))
+        let explicit = std::env::var("ARMIN_JEV_PROVIDER").ok();
+        let typesafe_key = env_key("TYPESAFE_AI_API_KEY").or_else(|| env_key("TYPESAFE_API_KEY"));
+        let openrouter_key = env_key("OPENROUTER_API_KEY");
+
+        let provider = resolve_provider(
+            explicit.as_deref(),
+            typesafe_key.is_some(),
+            openrouter_key.is_some(),
+        )
+        .map_err(anyhow::Error::msg)?
+        .ok_or_else(|| {
+            anyhow!(
+                "no API key for Jev extraction: set TYPESAFE_AI_API_KEY (typesafe.ai) \
+                 or OPENROUTER_API_KEY (openrouter.ai)"
+            )
+        })?;
+
+        let (api_key, base_url, default_model, missing) = match provider {
+            JevProvider::Typesafe => (
+                typesafe_key,
+                std::env::var("TYPESAFE_BASE_URL")
+                    .map(|b| normalize_jev_base(&b))
+                    .unwrap_or_else(|_| JevProvider::DEFAULT_TYPESAFE_BASE.to_string()),
+                JevProvider::DEFAULT_TYPESAFE_MODEL,
+                "no TypeSafe API key: set TYPESAFE_AI_API_KEY",
+            ),
+            JevProvider::OpenRouter => (
+                openrouter_key,
+                std::env::var("ARMIN_JEV_BASE_URL")
+                    .map(|b| normalize_jev_base(&b))
+                    .unwrap_or_else(|_| JevProvider::DEFAULT_OPENROUTER_BASE.to_string()),
+                JevProvider::DEFAULT_OPENROUTER_MODEL,
+                "no OpenRouter API key: set OPENROUTER_API_KEY",
+            ),
+        };
+        let api_key = api_key.ok_or_else(|| anyhow!("{missing}"))?;
+        let model = std::env::var("ARMIN_JEV_MODEL")
             .ok()
-            .filter(|k| !k.trim().is_empty())
-            .ok_or_else(|| anyhow!("no TypeSafe API key: set TYPESAFE_AI_API_KEY"))?;
-        let base_url = std::env::var("TYPESAFE_BASE_URL")
-            .unwrap_or_else(|_| "https://api.typesafe.ai".to_string());
-        let model =
-            std::env::var("ARMIN_JEV_MODEL").unwrap_or_else(|_| "jev-1.13.0".to_string());
-        Ok(Self::new(api_key, base_url, model))
+            .filter(|m| !m.trim().is_empty())
+            .unwrap_or_else(|| default_model.to_string());
+        Ok(Self::new(provider, api_key, base_url, model))
     }
 
-    pub fn new(api_key: String, base_url: String, model: String) -> Self {
+    pub fn new(provider: JevProvider, api_key: String, base_url: String, model: String) -> Self {
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(120))
             .pool_max_idle_per_host(4)
             .build()
             .expect("failed to build reqwest client");
         Self {
+            provider,
             http,
             api_key,
             base_url: base_url.trim_end_matches('/').to_string(),
@@ -265,6 +378,11 @@ impl JevClient {
             input_tokens: AtomicU64::new(0),
             output_tokens: AtomicU64::new(0),
         }
+    }
+
+    /// Which relay this client talks to.
+    pub fn provider(&self) -> &'static str {
+        self.provider.name()
     }
 
     pub fn model(&self) -> &str {
@@ -714,6 +832,48 @@ pub async fn extract_native_batch(
 mod tests {
     use super::*;
     use armin_ingest::EventKind;
+
+    #[test]
+    fn provider_resolution_explicit_wins() {
+        let r = |e, t, o| resolve_provider(e, t, o);
+        assert_eq!(r(Some("openrouter"), false, true), Ok(Some(JevProvider::OpenRouter)));
+        // Explicit provider wins even when another key is present — and an
+        // explicitly-chosen provider without its key fails later, loudly.
+        assert_eq!(r(Some("typesafe"), false, true), Ok(Some(JevProvider::Typesafe)));
+        assert_eq!(r(Some("typesafe"), true, true), Ok(Some(JevProvider::Typesafe)));
+        assert_eq!(r(Some("OpenRouter "), true, false), Ok(Some(JevProvider::OpenRouter)));
+        // Unknown explicit values are an error, never a silent fallback.
+        assert!(r(Some("openai"), true, true).is_err());
+        assert!(r(Some(""), true, true) == Ok(Some(JevProvider::Typesafe)));
+    }
+
+    #[test]
+    fn provider_resolution_autodetect_prefers_typesafe() {
+        let r = |e, t, o| resolve_provider(e, t, o);
+        assert_eq!(r(None, true, false), Ok(Some(JevProvider::Typesafe)));
+        assert_eq!(r(None, false, true), Ok(Some(JevProvider::OpenRouter)));
+        // Both keys without an explicit choice: unchanged pre-OpenRouter
+        // behavior (Typesafe first).
+        assert_eq!(r(None, true, true), Ok(Some(JevProvider::Typesafe)));
+        assert_eq!(r(None, false, false), Ok(None));
+    }
+
+    #[test]
+    fn provider_default_models_and_bases() {
+        assert_eq!(JevProvider::DEFAULT_TYPESAFE_BASE, "https://api.typesafe.ai");
+        assert_eq!(JevProvider::DEFAULT_OPENROUTER_BASE, "https://openrouter.ai/api");
+        assert_eq!(JevProvider::Typesafe.name(), "typesafe");
+        assert_eq!(JevProvider::OpenRouter.name(), "openrouter");
+    }
+
+    #[test]
+    fn normalize_base_tolerates_pasted_suffixes() {
+        assert_eq!(normalize_jev_base("https://api.typesafe.ai"), "https://api.typesafe.ai");
+        assert_eq!(normalize_jev_base("https://api.typesafe.ai/"), "https://api.typesafe.ai");
+        // A pasted /v1 suffix would otherwise double into /v1/v1/systemone.
+        assert_eq!(normalize_jev_base("https://openrouter.ai/api/v1"), "https://openrouter.ai/api");
+        assert_eq!(normalize_jev_base(" https://openrouter.ai/api/ "), "https://openrouter.ai/api");
+    }
 
     fn event(id: &str, text: &str) -> EventRecord {
         EventRecord {

@@ -44,8 +44,9 @@ plugin (.opencode/plugins/armin.ts)
 ├── CAPTURE  tool calls + prose → engine /ingest (no added latency)
 ├── EXTRACT  background batches: TypeSafe System One judgments by default
 │            (jev: verbatim sentences, select-don't-generate — hallucinated
-│            memory is impossible); generative LLM is the opt-out and the
-│            automatic fallback when no Typesafe key is set
+│            memory is impossible; direct via typesafe.ai or relayed through
+│            OpenRouter); generative LLM is the opt-out and the automatic
+│            fallback when no Jev key is set
 ├── PUSH     reasoning-state brief every turn + into compaction context
 └── ENGINE   per-project graph DB (sled), keyed by git origin remote —
              memory follows the project, not the checkout
@@ -69,20 +70,28 @@ npx armin-opencode install       # npm: fetches the release binary + registers
                                  # the plugin (no Rust toolchain needed)
 scripts/install.sh               # or build from source (needs cargo)
 
-# 2. Give it a Typesafe key — jev extraction is the default and needs one.
-#    (Without it the engine falls back to your Anthropic/OpenAI key, and with
-#    neither it stays deterministic-only: import + warnings, no prose memory.)
-export TYPESAFE_AI_API_KEY=...        # or "armin": { "typesafeKey": "..." } in
-                                      # your global opencode config
+# 2. Give Jev a key — jev extraction is the default and needs one.
+#    Two relays serve the same System One API; pick either:
+export TYPESAFE_AI_API_KEY=...        # typesafe.ai direct
+# export OPENROUTER_API_KEY=...       # or via OpenRouter (billed there;
+#                                     # jev routes to ~typesafe/jev-latest)
+#    …or put it in your global opencode config instead:
+#    "armin": { "typesafeKey": "..." }
+#    "armin": { "jevProvider": "openrouter", "openrouterKey": "..." }
 
 # 3. Enable it per environment (the plugin itself is global, the engine opt-in)
 export ARMIN_ENABLED=1
 # optional knobs:
 # ARMIN_ENGINE_BIN=~/.local/bin/armin-engine
 # ARMIN_MODEL=...                extraction model override
-# ARMIN_EXTRACTION_MODE=llm|jev  (default: jev — TypeSafe AI, verbatim nodes;
-#                                 set llm to opt out; without a Typesafe key
-#                                 the engine falls back to LLM automatically)
+# ARMIN_EXTRACTION_MODE=llm|jev  (default: jev — System One, verbatim nodes;
+#                                 set llm to opt out; without a Typesafe/
+#                                 OpenRouter key the engine falls back to
+#                                 LLM automatically)
+# ARMIN_JEV_PROVIDER=openrouter  relay for jev: typesafe|openrouter
+#                                 (default: auto from which key is set)
+# ARMIN_JEV_MODEL=...            jev model override (default jev-1.13.0,
+#                                 or jev-latest via OpenRouter)
 # ARMIN_BATCH_MS=15000           extraction debounce window
 # ARMIN_BATCH_EVENTS=10          events per extraction call
 # ARMIN_DB_DIR=~/.opencode/armin graph storage (per-project, keyed by git origin)
