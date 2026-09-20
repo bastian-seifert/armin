@@ -94,6 +94,28 @@ function buildFromSource() {
   return true;
 }
 
+let pendingTypesafeKey = null;
+
+/** Ask for the Typesafe key when nothing is configured (TTY only; the key
+ * goes into the opencode config — the plugin passes it to the sidecar). */
+function askForTypesafeKey() {
+  if (process.env.TYPESAFE_AI_API_KEY) return Promise.resolve();
+  if (!process.stdin.isTTY) return Promise.resolve();
+  const readline = require("readline");
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  return new Promise((resolve) => {
+    rl.question(
+      "TypeSafe System One API key (jev extraction is the default) — paste, or Enter to skip: ",
+      (answer) => {
+        rl.close();
+        const key = (answer || "").trim();
+        if (key) pendingTypesafeKey = key;
+        resolve();
+      },
+    );
+  });
+}
+
 function registerPlugin() {
   const plugin = path.join(PKG_ROOT, "plugins", "armin.ts");
   if (!fs.existsSync(plugin)) throw new Error(`plugin not found at ${plugin}`);
@@ -115,10 +137,18 @@ function registerPlugin() {
     }
   }
   const entry = "file://" + plugin;
+  let changed = false;
   const plugins = Array.isArray(data.plugin) ? data.plugin : [];
   if (!plugins.includes(entry)) {
     plugins.push(entry);
     data.plugin = plugins;
+    changed = true;
+  }
+  if (pendingTypesafeKey && !process.env.TYPESAFE_AI_API_KEY) {
+    data.armin = { ...(data.armin || {}), typesafeKey: pendingTypesafeKey };
+    changed = true;
+  }
+  if (changed) {
     fs.mkdirSync(cfgDir, { recursive: true });
     fs.writeFileSync(cfgPath, JSON.stringify(data, null, 2));
   }
@@ -144,8 +174,9 @@ async function install() {
       }
     }
   }
+  await askForTypesafeKey();
   registerPlugin();
-  const tsKey = process.env.TYPESAFE_AI_API_KEY;
+  const tsKey = process.env.TYPESAFE_AI_API_KEY || pendingTypesafeKey;
   const llmKey = process.env.ANTHROPIC_API_KEY || process.env.OPENAI_API_KEY;
   if (tsKey) {
     console.log("extraction: jev (TypeSafe System One) — ready");

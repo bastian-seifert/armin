@@ -37,7 +37,15 @@ if [[ ! -x "$BIN" ]]; then
     exit 1
 fi
 
-# 2. Register the plugin in the global opencode config so EVERY project
+# 2. Ask for the Typesafe key (jev is the default extraction mode); it goes
+#    into the opencode config — the plugin passes it to the sidecar.
+TS_KEY_INPUT=""
+if [[ -z "${TYPESAFE_AI_API_KEY:-}" && -t 0 ]]; then
+    read -r -p "TypeSafe System One API key (jev extraction is the default) — paste, or Enter to skip: " \
+        TS_KEY_INPUT || TS_KEY_INPUT=""
+fi
+
+# 3. Register the plugin in the global opencode config so EVERY project
 #    gets ARMIN (the plugin itself is opt-in per environment via
 #    ARMIN_ENABLED=1).
 PLUGIN_PATH="$REPO/.opencode/plugins/armin.ts"
@@ -47,7 +55,7 @@ CFG_JSONC="$CFG_DIR/opencode.jsonc"
 
 register_plugin() {
     local cfg="$1"
-    python3 - "$cfg" "$PLUGIN_PATH" <<'PYEOF'
+    TS_KEY_INPUT="$TS_KEY_INPUT" python3 - "$cfg" "$PLUGIN_PATH" <<'PYEOF'
 import json, re, sys, os
 cfg, plugin = sys.argv[1], sys.argv[2]
 text = open(cfg).read() if os.path.exists(cfg) else ""
@@ -62,14 +70,24 @@ except Exception:
     sys.exit(0)
 plugins = data.get("plugin", [])
 entry = "file://" + plugin
-if entry in plugins:
-    print(f"plugin already registered in {cfg}")
-else:
+changed = False
+if entry not in plugins:
     plugins.append(entry)
     data["plugin"] = plugins
+    changed = True
+ts_input = os.environ.get("TS_KEY_INPUT", "").strip()
+if ts_input and not os.environ.get("TYPESAFE_AI_API_KEY"):
+    armin = data.get("armin") or {}
+    if armin.get("typesafeKey") != ts_input:
+        armin["typesafeKey"] = ts_input
+        data["armin"] = armin
+        changed = True
+if changed:
     with open(cfg, "w") as f:
         json.dump(data, f, indent=2)
     print(f"plugin registered in {cfg}")
+else:
+    print(f"plugin already registered in {cfg}")
 PYEOF
 }
 
@@ -79,7 +97,7 @@ else
     register_plugin "$CFG_JSON"
 fi
 
-# 3. Health check: spawn the engine briefly and verify the handshake.
+# 4. Health check: spawn the engine briefly and verify the handshake.
 echo "verifying engine ..."
 TMPDIR_ENGINE="$(mktemp -d)"
 ARMIN_DB_DIR="$TMPDIR_ENGINE" "$BIN" --port 0 >"$TMPDIR_ENGINE/log" 2>&1 &
@@ -106,7 +124,7 @@ fi
 
 # 4. Extraction-mode status: jev (default) needs a Typesafe key.
 echo "checking extraction setup ..."
-if [[ -n "${TYPESAFE_AI_API_KEY:-}" ]]; then
+if [[ -n "${TYPESAFE_AI_API_KEY:-}" || -n "${TS_KEY_INPUT:-}" ]]; then
     echo "extraction: jev (TypeSafe System One) — ready"
 elif [[ -n "${ANTHROPIC_API_KEY:-}" || -n "${OPENAI_API_KEY:-}" ]]; then
     echo "extraction: LLM fallback — jev is the default but no Typesafe key is set."
