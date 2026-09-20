@@ -86,7 +86,7 @@ ARMIN_DB_DIR="$TMPDIR_ENGINE" "$BIN" --port 0 >"$TMPDIR_ENGINE/log" 2>&1 &
 ENGINE_PID=$!
 HEALTH="unknown"
 for _ in $(seq 1 30); do
-    PORT=$(grep -o 'ARMIN_PORT=[0-9]*' "$TMPDIR_ENGINE/log" 2>/dev/null | cut -d= -f2)
+    PORT=$(grep -o 'ARMIN_PORT=[0-9]*' "$TMPDIR_ENGINE/log" 2>/dev/null | cut -d= -f2 || true)
     if [[ -n "$PORT" ]]; then
         if curl -sf "http://127.0.0.1:$PORT/api/v1/health" >/dev/null 2>&1; then
             HEALTH="ok"
@@ -102,6 +102,21 @@ if [[ "$HEALTH" == "ok" ]]; then
     echo "engine health: ok"
 else
     echo "warning: engine health check did not complete (it may still work)"
+fi
+
+# 4. Extraction-mode status: jev (default) needs a Typesafe key.
+echo "checking extraction setup ..."
+if [[ -n "${TYPESAFE_AI_API_KEY:-}" ]]; then
+    echo "extraction: jev (TypeSafe System One) — ready"
+elif [[ -n "${ANTHROPIC_API_KEY:-}" || -n "${OPENAI_API_KEY:-}" ]]; then
+    echo "extraction: LLM fallback — jev is the default but no Typesafe key is set."
+    echo "  Get a key at typesafe.ai and export TYPESAFE_AI_API_KEY (or put"
+    echo '  "armin": { "typesafeKey": "..." } in your opencode config).'
+else
+    echo "extraction: NONE (deterministic-only) — import, capture and unverified-edit"
+    echo "  warnings work; prose extraction does not."
+    echo "  Set TYPESAFE_AI_API_KEY (typesafe.ai) for jev extraction — the default —"
+    echo "  or ANTHROPIC_API_KEY / OPENAI_API_KEY for LLM fallback."
 fi
 
 cat <<EOF

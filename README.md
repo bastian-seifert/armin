@@ -69,7 +69,13 @@ npx armin-opencode install       # npm: fetches the release binary + registers
                                  # the plugin (no Rust toolchain needed)
 scripts/install.sh               # or build from source (needs cargo)
 
-# 2. Enable it per environment (the plugin itself is global, the engine opt-in)
+# 2. Give it a Typesafe key — jev extraction is the default and needs one.
+#    (Without it the engine falls back to your Anthropic/OpenAI key, and with
+#    neither it stays deterministic-only: import + warnings, no prose memory.)
+export TYPESAFE_AI_API_KEY=...        # or "armin": { "typesafeKey": "..." } in
+                                      # your global opencode config
+
+# 3. Enable it per environment (the plugin itself is global, the engine opt-in)
 export ARMIN_ENABLED=1
 # optional knobs:
 # ARMIN_ENGINE_BIN=~/.local/bin/armin-engine

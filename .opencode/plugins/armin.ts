@@ -16,6 +16,8 @@
  *       "enabled": true,
  *       "provider": "anthropic",          // anthropic | openai (default: infer from keys)
  *       "apiKey": "sk-...",               // sent to the sidecar only; env key wins if both set
+ *       "typesafeKey": "...",             // Typesafe System One key (jev is the
+ *                                         // default extraction mode); env wins
  *       "model": "session",               // "session" = follow the live session model
  *                                         // "small"  = reuse opencode's small_model setting
  *                                         // any string = fixed extraction model
@@ -490,6 +492,10 @@ const ArminPlugin: Plugin = async (ctx) => {
   if (provider === "anthropic" || provider === "openai") {
     spawnEnv.LLM_PROVIDER = provider
   }
+  // Typesafe key (jev is the default extraction mode): config value is
+  // passed to the sidecar only; a key already in the environment wins.
+  const typesafeKey = cfgStr("typesafeKey", "TYPESAFE_AI_API_KEY")
+  if (typesafeKey) spawnEnv.TYPESAFE_AI_API_KEY = typesafeKey
   // API key: config value is passed to the sidecar only; a key already in
   // the environment wins (no override).
   if (typeof armin.apiKey === "string" && armin.apiKey) {
@@ -519,6 +525,31 @@ const ArminPlugin: Plugin = async (ctx) => {
   if (sidecar.port) {
     log(`reasoning-state UI: http://127.0.0.1:${sidecar.port}/ui`)
   }
+  // Surface the effective extraction mode once — this is the difference
+  // between "memory works" and a silent deterministic downgrade.
+  void (async () => {
+    try {
+      const health = await api.get<{ extraction: string }>("/health")
+      const mode = health?.extraction ?? "unknown"
+      if (mode === "jev") {
+        log(`extraction: jev (TypeSafe System One) — ready`)
+      } else if (mode === "llm") {
+        log(
+          `extraction: llm (fallback) — jev is the default but no Typesafe key is ` +
+            `configured. Set TYPESAFE_AI_API_KEY in your environment or ` +
+            `"armin": { "typesafeKey": "..." } in your opencode config.`,
+        )
+      } else {
+        log(
+          `extraction: deterministic-only — no API keys found. Import and ` +
+            `unverified-edit warnings work; prose extraction does not. Set ` +
+            `TYPESAFE_AI_API_KEY (or ANTHROPIC/OPENAI_API_KEY) to enable it.`,
+        )
+      }
+    } catch {
+      // best-effort status only
+    }
+  })()
 
   // ── Cold start: import AGENTS.md / CLAUDE.md into an empty graph ──────
   // Deterministic parse on the engine side (content-hash IDs, idempotent).

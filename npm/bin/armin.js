@@ -145,6 +145,24 @@ async function install() {
     }
   }
   registerPlugin();
+  const tsKey = process.env.TYPESAFE_AI_API_KEY;
+  const llmKey = process.env.ANTHROPIC_API_KEY || process.env.OPENAI_API_KEY;
+  if (tsKey) {
+    console.log("extraction: jev (TypeSafe System One) — ready");
+  } else if (llmKey) {
+    console.log(
+      "extraction: LLM fallback — jev is the default but no Typesafe key is set.\n" +
+        "  Get a key at typesafe.ai and export TYPESAFE_AI_API_KEY (or put\n" +
+        '  "armin": { "typesafeKey": "..." } in your opencode config).',
+    );
+  } else {
+    console.log(
+      "extraction: NONE (deterministic-only) — import, capture and unverified-edit\n" +
+        "  warnings work; prose extraction does not.\n" +
+        "  Set TYPESAFE_AI_API_KEY (typesafe.ai) for jev extraction — the default —\n" +
+        "  or ANTHROPIC_API_KEY / OPENAI_API_KEY for LLM fallback.",
+    );
+  }
   console.log(`
 ── done ────────────────────────────────────────────────────────
 Enable ARMIN per environment:
