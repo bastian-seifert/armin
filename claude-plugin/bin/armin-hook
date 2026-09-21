@@ -1,0 +1,17 @@
+#!/bin/sh
+# armin-hook dispatcher — Claude Code invokes this path from hooks.json.
+# Hooks are plain processes, so the ARMIN event handler must exist per
+# platform; this script execs the bundled binary for the running one.
+# Unsupported platforms exit 0 silently: ARMIN must never break a session.
+set -u
+
+DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+OS="$(uname -s)"
+ARCH="$(uname -m)"
+
+case "$OS-$ARCH" in
+    Linux-x86_64)  exec "$DIR/armin-hook-linux-x64" "$@" ;;
+    Darwin-arm64)  exec "$DIR/armin-hook-macos-arm64" "$@" ;;
+    Darwin-x86_64) exec "$DIR/armin-hook-macos-x64" "$@" ;;
+    *) exit 0 ;;
+esac

@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "armin",
+  "displayName": "ARMIN",
+  "version": "0.1.0",
+  "description": "Queryable decision memory for Claude Code. Passively captures tool calls and prose into a reasoning graph, pushes a compact brief into context every turn, and rehydrates it after compaction.",
+  "author": {
+    "name": "Bastian Seifert",
+    "url": "https://github.com/bastian-seifert"
+  },
+  "homepage": "https://github.com/bastian-seifert/armin",
+  "repository": "https://github.com/bastian-seifert/armin",
+  "license": "Apache-2.0",
+  "keywords": [
+    "agent-memory",
+    "decisions",
+    "compaction",
+    "continuity",
+    "knowledge-graph",
+    "rust"
+  ],
+  "userConfig": {
+    "typesafeKey": {
+      "type": "string",
+      "title": "TypeSafe System One API key",
+      "description": "Enables jev extraction (default backend, verbatim nodes, hallucination-proof). Get a key at typesafe.ai. An existing TYPESAFE_AI_API_KEY environment variable wins if set.",
+      "sensitive": true
+    },
+    "openrouterKey": {
+      "type": "string",
+      "title": "OpenRouter API key",
+      "description": "Alternative relay for jev extraction (same System One API, OpenRouter billing). Used when no TypeSafe key is set; an existing OPENROUTER_API_KEY env var wins.",
+      "sensitive": true
+    },
+    "model": {
+      "type": "string",
+      "title": "Extraction model override",
+      "description": "Optional fixed extraction model for LLM-fallback mode (e.g. claude-haiku-4-5). Unset by default."
+    },
+    "debug": {
+      "type": "boolean",
+      "title": "Verbose logging",
+      "description": "Logs plugin activity to Claude Code's debug log and prints the reasoning-state UI URL. Off by default.",
+      "default": false
+    }
+  }
+}

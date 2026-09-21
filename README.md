@@ -52,7 +52,7 @@ plugin (.opencode/plugins/armin.ts)
              memory follows the project, not the checkout
 ```
 
-Three crates:
+Three crates (plus the **`armin-hook`** launcher for hook-based harnesses):
 
 - **`armin-graph`** — thread-safe `petgraph::StableDiGraph` + sled persistence, debt detection, decision status, session diff, communities, scoped retrieval (BM25 / embedding / hybrid).
 - **`armin-extraction`** — provider-agnostic batch extraction: `jev-native` (typed judgments, no generative LLM, hallucination-proof verbatim nodes) or an extraction LLM (Anthropic/OpenAI).
@@ -111,6 +111,17 @@ First run in a project: if an `AGENTS.md` or `CLAUDE.md` exists, ARMIN imports i
 Cost/latency model: tool calls are captured with **zero** LLM calls; prose is batched (one cheap call per 15s window by default); the brief is computed in Rust (<10ms). The agent's turns never wait on the graph. Without any API key you still get capture, unverified-edit/failing-check warnings, agent writes and the AGENTS.md import — everything else needs extraction.
 
 **Editing with memory**: the brief gains a "Binding here" section — decisions and rules scoped to the files you have been editing — and a standing instruction: if a new request conflicts with a remembered decision, say so explicitly before deviating.
+
+---
+
+## Quickstart: Claude Code plugin
+
+```bash
+claude plugin marketplace add bastian-seifert/armin
+claude plugin install armin@armin
+```
+
+That's it — the plugin bundles the Rust sidecar (Linux x64, macOS x64/arm64). ARMIN hooks in passively: capture on `PostToolUse` (async, never waits), the reasoning-state brief injected from `UserPromptSubmit` stdout, re-injected on `SessionStart` after compaction, and the compaction summary fed back via `PostCompact`. Extraction is the same jev/LLM stack as the OpenCode plugin (`TYPESAFE_AI_API_KEY` / `OPENROUTER_API_KEY` env vars, or the plugin's config prompt). Port details and status: **`docs/claude-code.md`**.
 
 ---
 

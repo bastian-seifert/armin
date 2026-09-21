@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-marketplace.json",
+  "name": "armin",
+  "owner": {
+    "name": "Bastian Seifert",
+    "url": "https://github.com/bastian-seifert"
+  },
+  "description": "ARMIN — queryable decision memory for AI coding agents.",
+  "plugins": [
+    {
+      "name": "armin",
+      "displayName": "ARMIN",
+      "description": "Queryable decision memory for Claude Code. Passively captures tool calls and prose into a reasoning graph, pushes a compact brief into context every turn, and rehydrates it after compaction.",
+      "version": "0.1.0",
+      "license": "Apache-2.0",
+      "category": "agent-memory",
+      "tags": [
+        "memory",
+        "decisions",
+        "compaction",
+        "continuity",
+        "rust"
+      ],
+      "source": {
+        "source": "archive",
+        "url": "https://github.com/bastian-seifert/armin/releases/download/v0.1.0/armin-claude-plugin-v0.1.0.zip"
+      }
+    }
+  ]
+}

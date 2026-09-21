@@ -1,0 +1,22 @@
+[package]
+name = "armin-hook"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "armin-hook"
+path = "src/main.rs"
+
+[dependencies]
+armin-ingest = { path = "../ingest" }
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+reqwest = { version = "0.12", features = ["json", "blocking", "rustls-tls"], default-features = false }
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3"

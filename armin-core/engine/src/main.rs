@@ -10,7 +10,8 @@ mod worker;
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use armin_extraction::{ExtractionClient, JevClient};
 use armin_graph::{Bm25Retriever, GraphStore, NodeRetriever};
@@ -77,6 +78,12 @@ struct Args {
     /// Path to write LLM training data (JSONL).
     #[arg(long, env = "LLM_TRAINING_DATA_PATH")]
     training_data: Option<PathBuf>,
+
+    /// Exit gracefully (sled flush) after this many seconds without any API
+    /// request. Used by hook launchers that spawn the engine as a detached
+    /// daemon: the next hook invocation simply starts a fresh one.
+    #[arg(long)]
+    idle_exit: Option<u64>,
 }
 
 #[tokio::main]
@@ -169,7 +176,7 @@ async fn main() -> anyhow::Result<()> {
         scratch: toolclass::Scratch::new(),
         event_log: Arc::new(RwLock::new(std::collections::VecDeque::with_capacity(20))),
         sessions: Arc::new(RwLock::new(Vec::new())),
-        current_session_idx: Arc::new(AtomicUsize::new(0)),
+        current_session_idx: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         current_session_id: Arc::new(RwLock::new(String::new())),
         prior_debt: Arc::new(RwLock::new(None)),
         metrics: Arc::new(metrics::Metrics::default()),
@@ -186,6 +193,26 @@ async fn main() -> anyhow::Result<()> {
 
     if extractor.is_some() || jev.is_some() {
         tokio::spawn(run_worker(state.clone(), ingest_rx));
+    }
+
+    // Last-activity clock for --idle-exit: bumped by a middleware that wraps
+    // every request, so any API call (ingest, brief, query, ...) counts.
+    let last_activity = Arc::new(AtomicU64::new(unix_secs()));
+    let (idle_tx, idle_rx) = tokio::sync::watch::channel(false);
+    if let Some(idle_secs) = args.idle_exit {
+        let last_activity = last_activity.clone();
+        tokio::spawn(async move {
+            let started = unix_secs();
+            loop {
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                let last = last_activity.load(Ordering::Relaxed).max(started);
+                if unix_secs().saturating_sub(last) >= idle_secs {
+                    info!("Idle for {idle_secs}s — shutting down (--idle-exit)");
+                    let _ = idle_tx.send(true);
+                    return;
+                }
+            }
+        });
     }
 
     let auth_token: armin_http::AuthToken = armin_http::optional_token(args.auth_token);
@@ -226,10 +253,18 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/v1/config", post(routes::update_config))
         // No browser clients are expected: the engine is called server-side
         // by the harness (Bun). Deny all cross-origin requests.
+        // No browser clients are expected: the engine is called server-side
+        // by the harness (Bun). Deny all cross-origin requests.
         .layer(CorsLayer::new())
         .layer(middleware::from_fn_with_state(
             auth_token,
             armin_http::require_bearer,
+        ))
+        // Outermost layer: count every request (even auth failures) as
+        // activity for --idle-exit.
+        .layer(middleware::from_fn_with_state(
+            last_activity.clone(),
+            bump_activity,
         ))
         .with_state(state);
 
@@ -244,7 +279,7 @@ async fn main() -> anyhow::Result<()> {
     let _ = std::io::stdout().flush();
 
     axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
+        .with_graceful_shutdown(shutdown_signal(idle_rx))
         .await?;
 
     // Persist everything that is still in memory.
@@ -254,8 +289,26 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Resolve on ctrl-c (all platforms) and SIGTERM (unix).
-async fn shutdown_signal() {
+fn unix_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+/// Bump the idle clock on every request.
+async fn bump_activity(
+    axum::extract::State(last): axum::extract::State<Arc<AtomicU64>>,
+    req: axum::extract::Request,
+    next: middleware::Next,
+) -> axum::response::Response {
+    last.store(unix_secs(), Ordering::Relaxed);
+    next.run(req).await
+}
+
+/// Resolve on ctrl-c (all platforms), SIGTERM (unix), or the --idle-exit
+/// watcher's signal.
+async fn shutdown_signal(mut idle: tokio::sync::watch::Receiver<bool>) {
     let ctrl_c = async {
         let _ = tokio::signal::ctrl_c().await;
     };
@@ -273,9 +326,21 @@ async fn shutdown_signal() {
     #[cfg(not(unix))]
     let terminate = std::future::pending::<()>();
 
+    let idle_fired = async {
+        loop {
+            if idle.changed().await.is_err() {
+                std::future::pending::<()>().await;
+            }
+            if *idle.borrow() {
+                return;
+            }
+        }
+    };
+
     tokio::select! {
         _ = ctrl_c => {},
         _ = terminate => {},
+        _ = idle_fired => {},
     }
     info!("Shutdown signal received");
 }

@@ -150,6 +150,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "armin-hook"
+version = "0.1.4"
+dependencies = [
+ "anyhow",
+ "armin-ingest",
+ "clap",
+ "libc",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "armin-http"
 version = "0.1.4"
 dependencies = [

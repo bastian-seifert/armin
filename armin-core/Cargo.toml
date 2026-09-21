@@ -1,5 +1,5 @@
 [workspace]
-members = ["graph", "extraction", "server", "grounding", "ingest", "engine", "http"]
+members = ["graph", "extraction", "server", "grounding", "ingest", "engine", "http", "hook"]
 resolver = "2"
 
 [workspace.package]
