@@ -97,6 +97,7 @@ function buildFromSource() {
 let pendingTypesafeKey = null;
 let pendingOpenrouterKey = null;
 let pendingJevProvider = null; // "openrouter" | "skip" | null (typesafe needs no config entry)
+let pendingPort = null; // fixed engine port, or null for OS auto-assign
 
 /** Ask which relay serves Jev and for the matching key (TTY only; values
  * go into the opencode config — the plugin passes them to the sidecar).
@@ -126,6 +127,30 @@ async function askForExtractionSetup() {
     } else {
       const key = ((await ask("TypeSafe System One API key — paste, or Enter to skip: ")) || "").trim();
       if (key) pendingTypesafeKey = key;
+    }
+  } finally {
+    rl.close();
+  }
+}
+
+/** Ask for an optional fixed engine port (TTY only; ARMIN_PORT in the
+ * environment is the runtime escape hatch and skips the prompt). A pinned
+ * port is written to the opencode config; the sidecar auto-falls back to a
+ * free port when it is busy. */
+async function askForPort() {
+  if (!process.stdin.isTTY) return;
+  if (process.env.ARMIN_PORT) return;
+  const readline = require("readline");
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  const ask = (q) => new Promise((resolve) => rl.question(q, resolve));
+  try {
+    const answer = ((await ask("\nFixed engine port (Enter = auto-assign per session): ")) || "").trim();
+    if (!answer) return;
+    const port = Number(answer);
+    if (Number.isInteger(port) && port >= 1024 && port <= 65535) {
+      pendingPort = port;
+    } else {
+      console.log(`invalid port "${answer}" (need 1024-65535) — engine port: auto-assign`);
     }
   } finally {
     rl.close();
@@ -181,6 +206,10 @@ function registerPlugin() {
     data.armin = { ...(data.armin || {}), jevProvider: "openrouter" };
     changed = true;
   }
+  if (pendingPort && data.armin.port !== pendingPort) {
+    data.armin = { ...(data.armin || {}), port: pendingPort };
+    changed = true;
+  }
   if (changed) {
     fs.mkdirSync(cfgDir, { recursive: true });
     fs.writeFileSync(cfgPath, JSON.stringify(data, null, 2));
@@ -209,6 +238,7 @@ async function install() {
     }
   }
   await askForExtractionSetup();
+  await askForPort();
   const registered = registerPlugin();
   const tsKey = process.env.TYPESAFE_AI_API_KEY || pendingTypesafeKey;
   const orKey = process.env.OPENROUTER_API_KEY || pendingOpenrouterKey;
@@ -241,6 +271,8 @@ ${registered
 
 Optional overrides (env wins over config):
     ARMIN_ENABLED=1                force-enable without the config entry
+    ARMIN_PORT=<port>              fixed engine port (default: OS auto-assign;
+                                   a busy pinned port auto-falls back)
     ARMIN_EXTRACTION_MODE=jev      System One extraction (default; needs
                                    TYPESAFE_AI_API_KEY or OPENROUTER_API_KEY)
     ARMIN_JEV_PROVIDER=openrouter  route jev via OpenRouter (auto-detected

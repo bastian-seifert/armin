@@ -78,6 +78,7 @@ export TYPESAFE_AI_API_KEY=...        # typesafe.ai direct
 #    …or put it in your global opencode config instead:
 #    "armin": { "typesafeKey": "..." }
 #    "armin": { "jevProvider": "openrouter", "openrouterKey": "..." }
+#    Pin the engine port (default: auto-assign): "armin": { "port": 4545 }
 
 # 3. Done — `armin install` writes "armin": { "enabled": true } into your
 #    global opencode config. Escape hatch (env wins over config):
@@ -96,6 +97,8 @@ export TYPESAFE_AI_API_KEY=...        # typesafe.ai direct
 # ARMIN_BATCH_MS=15000           extraction debounce window
 # ARMIN_BATCH_EVENTS=10          events per extraction call
 # ARMIN_DB_DIR=~/.opencode/armin graph storage (per-project, keyed by git origin)
+# ARMIN_PORT=4545                fixed engine port (default: auto-assign per
+#                                session; auto-falls back to a free port if busy)
 # ARMIN_DEBUG=1                  verbose plugin logging
 ```
 
@@ -185,7 +188,7 @@ Events can be pushed via `POST /ingest` instead of `--stream`. Provider selectio
 | `GET /api/v1/metrics` | Pipeline counters |
 | `GET /api/v1/health` | Liveness + mode |
 
-Handshake: the engine prints `ARMIN_PORT=<port>` on stdout line 1; graceful SIGTERM with sled flush.
+Handshake: the engine prints `ARMIN_PORT=<port>` on stdout line 1; graceful SIGTERM with sled flush. The port is OS-assigned per session by default (`--port 0`); pin it with `"armin": { "port": 4545 }` in your opencode config or the `ARMIN_PORT` env var (installer prompt available) — a busy pinned port auto-falls back to a free port.
 
 ### MCP
 

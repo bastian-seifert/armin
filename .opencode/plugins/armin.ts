@@ -31,12 +31,15 @@
  *       "dbDir": "~/.opencode/armin"      // per-project graph databases
  *                                         // (keyed by git origin remote; path
  *                                         // fallback for non-git dirs)
+ *       "port": 4545,                     // optional fixed engine port (default:
+ *                                         // OS auto-assign; auto-falls back when
+ *                                         // the port is busy); env wins
  *     }
  *   }
  *
  * Precedence: engine defaults < config files (global < project) < env vars
  * (ARMIN_MODEL, ARMIN_BATCH_MS, ARMIN_BATCH_EVENTS, ARMIN_DB_DIR,
- * ARMIN_ENGINE_BIN, ARMIN_DEBUG) — env is the escape hatch.
+ * ARMIN_PORT, ARMIN_ENGINE_BIN, ARMIN_DEBUG) — env is the escape hatch.
  *
  * Note: opencode's auth store (OAuth logins) is not exposed to plugins, so
  * extraction uses `apiKey`/environment API keys; the session *model* can
@@ -207,6 +210,8 @@ class Sidecar {
   private readonly _token = crypto.randomUUID().replace(/-/g, "")
   private starts = 0
   private disposed = false
+  /** Set after a pinned port failed to start; later starts auto-assign. */
+  private pinnedPortFailed = false
   port: number | null = null
 
   get token(): string {
@@ -217,6 +222,7 @@ class Sidecar {
     private engineBin: string,
     private dbFile: string,
     private spawnEnv: Record<string, string> = {},
+    private pinnedPort?: number,
   ) {}
 
   /** Start the engine and wait for the port handshake + health check. */
@@ -229,9 +235,12 @@ class Sidecar {
     }
     this.starts++
 
+    // With a pinned port (armin.port / ARMIN_PORT) the engine binds that
+    // exact port; once it has failed once, later starts auto-assign again.
+    const usePinned = this.pinnedPort !== undefined && !this.pinnedPortFailed
     const args = [
       this.engineBin,
-      "--port", "0",
+      "--port", usePinned ? String(this.pinnedPort) : "0",
       "--db-path", this.dbFile,
       "--auth-token", this.token,
     ]
@@ -263,15 +272,22 @@ class Sidecar {
 
     const port = await this.readPort(proc, 5_000)
     if (!port) {
-      log("sidecar did not report ARMIN_PORT in time")
       proc.kill()
+      if (usePinned) {
+        // The engine exited without a handshake — the pinned port is
+        // almost certainly busy. Fall back to OS auto-assign and retry.
+        log(`sidecar could not bind pinned port ${this.pinnedPort}; falling back to auto-assign`)
+        this.pinnedPortFailed = true
+        return this.start()
+      }
+      log("sidecar did not report ARMIN_PORT in time")
       return false
     }
     this.port = port
 
     for (let i = 0; i < 50; i++) {
       if (await this.healthy()) {
-        log(`sidecar ready on 127.0.0.1:${port}`)
+        log(`sidecar ready on 127.0.0.1:${port}${usePinned ? " (pinned)" : ""}`)
         return true
       }
       if (this.disposed) return false
@@ -321,6 +337,7 @@ class Sidecar {
         break
       }
       if (!chunk) break
+      if (chunk.done) break // engine exited (e.g. bind failure) — stop waiting
       buf += new TextDecoder().decode(chunk.value ?? new Uint8Array())
       const m = buf.match(/ARMIN_PORT=(\d+)/)
       if (m) {
@@ -523,7 +540,20 @@ const ArminPlugin: Plugin = async (ctx) => {
     (typeof armin.batchEvents === "number" ? String(armin.batchEvents) : undefined)
   if (batchEvents) spawnEnv.ARMIN_BATCH_EVENTS = batchEvents
 
-  const sidecar = new Sidecar(engineBin, dbFile, spawnEnv)
+  // Optional fixed engine port: ARMIN_PORT env > armin.port config. Invalid
+  // values (non-integer, 0, out of range) are ignored → OS auto-assign; a
+  // busy pinned port falls back to auto-assign when the sidecar starts.
+  const portEnv = Number(process.env.ARMIN_PORT)
+  const portCfg = typeof armin.port === "number" ? armin.port : Number.NaN
+  const pinnedPort =
+    Number.isInteger(portEnv) && portEnv >= 1 && portEnv <= 65535
+      ? portEnv
+      : Number.isInteger(portCfg) && portCfg >= 1 && portCfg <= 65535
+        ? portCfg
+        : undefined
+  if (pinnedPort) log("fixed engine port:", pinnedPort)
+
+  const sidecar = new Sidecar(engineBin, dbFile, spawnEnv, pinnedPort)
   const started = await sidecar.start()
   if (!started) {
     log("sidecar unavailable — plugin inert")

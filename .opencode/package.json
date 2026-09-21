@@ -2,7 +2,9 @@
   "name": "armin-opencode-plugin",
   "private": true,
   "devDependencies": {
-    "@opencode-ai/plugin": "*",
     "@types/bun": "latest"
+  },
+  "dependencies": {
+    "@opencode-ai/plugin": "1.18.31"
   }
 }

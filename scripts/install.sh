@@ -77,6 +77,29 @@ if [[ -t 0 ]]; then
     fi
 fi
 
+# 2b. Engine port: the sidecar auto-assigns a free loopback port per session
+#     (ARMIN_PORT= handshake on stdout). A fixed port can be pinned here for
+#     firewall rules or monitoring — it is written to the opencode config as
+#     "armin": { "port": N }. A busy pinned port auto-falls back to a free
+#     port at session start. ARMIN_PORT in the environment is the runtime
+#     escape hatch and skips the prompt.
+PORT_INPUT=""
+if [[ -n "${ARMIN_PORT:-}" ]]; then
+    PORT_INPUT="$ARMIN_PORT"
+elif [[ -t 0 ]]; then
+    echo
+    read -r -p "Fixed engine port (Enter = auto-assign per session): " \
+        PORT_INPUT || PORT_INPUT=""
+fi
+if [[ -n "${PORT_INPUT:-}" ]]; then
+    if [[ "$PORT_INPUT" =~ ^[0-9]+$ ]] && (( PORT_INPUT >= 1024 && PORT_INPUT <= 65535 )); then
+        echo "engine port: pinned to $PORT_INPUT (auto-falls back to a free port if busy)"
+    else
+        echo "ignoring invalid port \"$PORT_INPUT\" (need 1024-65535) — engine port: auto-assign"
+        PORT_INPUT=""
+    fi
+fi
+
 # The provider choice is persisted only when the user explicitly picked
 # OpenRouter in the prompt (env-detected providers drive the sidecar via
 # their env vars; writing nothing avoids overriding that later).
@@ -95,7 +118,8 @@ CFG_JSONC="$CFG_DIR/opencode.jsonc"
 register_plugin() {
     local cfg="$1"
     TS_KEY_INPUT="$TS_KEY_INPUT" OR_KEY_INPUT="$OR_KEY_INPUT" \
-    WRITE_JEV_PROVIDER="$WRITE_JEV_PROVIDER" python3 - "$cfg" "$PLUGIN_PATH" <<'PYEOF'
+    WRITE_JEV_PROVIDER="$WRITE_JEV_PROVIDER" PORT_INPUT="$PORT_INPUT" \
+    python3 - "$cfg" "$PLUGIN_PATH" <<'PYEOF'
 import json, re, sys, os
 cfg, plugin = sys.argv[1], sys.argv[2]
 text = open(cfg).read() if os.path.exists(cfg) else ""
@@ -130,6 +154,12 @@ provider = os.environ.get("WRITE_JEV_PROVIDER", "").strip()
 if provider and armin.get("jevProvider") != provider:
     armin["jevProvider"] = provider
     changed = True
+port_input = os.environ.get("PORT_INPUT", "").strip()
+if port_input.isdigit() and 1024 <= int(port_input) <= 65535:
+    port = int(port_input)
+    if armin.get("port") != port:
+        armin["port"] = port
+        changed = True
 if changed:
     data["armin"] = armin
     os.makedirs(os.path.dirname(cfg), exist_ok=True)
@@ -147,10 +177,12 @@ else
     register_plugin "$CFG_JSON"
 fi
 
-# 4. Health check: spawn the engine briefly and verify the handshake.
+# 4. Health check: spawn the engine briefly and verify the handshake. With a
+#    pinned port this also proves the port is actually bindable right now.
 echo "verifying engine ..."
 TMPDIR_ENGINE="$(mktemp -d)"
-ARMIN_DB_DIR="$TMPDIR_ENGINE" "$BIN" --port 0 >"$TMPDIR_ENGINE/log" 2>&1 &
+HEALTH_PORT="${PORT_INPUT:-0}"
+ARMIN_DB_DIR="$TMPDIR_ENGINE" "$BIN" --port "$HEALTH_PORT" >"$TMPDIR_ENGINE/log" 2>&1 &
 ENGINE_PID=$!
 HEALTH="unknown"
 for _ in $(seq 1 30); do
@@ -170,6 +202,10 @@ if [[ "$HEALTH" == "ok" ]]; then
     echo "engine health: ok"
 else
     echo "warning: engine health check did not complete (it may still work)"
+    if [[ -n "${PORT_INPUT:-}" ]]; then
+        echo "  if the pinned port is already in use, ARMIN auto-falls back to a"
+        echo "  free port at session start"
+    fi
 fi
 
 # 5. Extraction-mode status: jev (default) needs a Typesafe or OpenRouter key.
@@ -207,6 +243,8 @@ Optional knobs:
                                    or jev-latest via OpenRouter)
     ARMIN_MODEL=<model>            extraction model override (llm mode)
     ARMIN_DB_DIR=~/.opencode/armin graph storage (per project)
+    ARMIN_PORT=<port>              fixed engine port (default: auto-assign;
+                                   env wins over the config value)
     ARMIN_DEBUG=1                  verbose plugin logging
 
 Start any opencode session in a git project — the reasoning-state brief
