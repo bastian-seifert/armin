@@ -148,8 +148,8 @@ function registerPlugin() {
     try {
       data = JSON.parse(text.replace(/^\s*\/\/.*$/gm, ""));
     } catch {
-      console.log(`\nCould not parse ${cfgPath} — register the plugin manually:\n  add "plugin": ["file://${plugin}"] to your opencode config\n`);
-      return;
+      console.log(`\nCould not parse ${cfgPath} — set up manually:\n  add "plugin": ["file://${plugin}"] and "armin": { "enabled": true } to your opencode config\n`);
+      return false;
     }
   }
   const entry = "file://" + plugin;
@@ -158,6 +158,12 @@ function registerPlugin() {
   if (!plugins.includes(entry)) {
     plugins.push(entry);
     data.plugin = plugins;
+    changed = true;
+  }
+  // `armin install` is an explicit opt-in — enable in config so no
+  // per-shell env var is needed (ARMIN_ENABLED stays as escape hatch).
+  if (data.armin?.enabled !== true) {
+    data.armin = { ...(data.armin || {}), enabled: true };
     changed = true;
   }
   if (pendingTypesafeKey && !process.env.TYPESAFE_AI_API_KEY) {
@@ -180,6 +186,7 @@ function registerPlugin() {
     fs.writeFileSync(cfgPath, JSON.stringify(data, null, 2));
   }
   console.log(`plugin registered in ${cfgPath}`);
+  return true;
 }
 
 async function install() {
@@ -202,7 +209,7 @@ async function install() {
     }
   }
   await askForExtractionSetup();
-  registerPlugin();
+  const registered = registerPlugin();
   const tsKey = process.env.TYPESAFE_AI_API_KEY || pendingTypesafeKey;
   const orKey = process.env.OPENROUTER_API_KEY || pendingOpenrouterKey;
   const llmKey = process.env.ANTHROPIC_API_KEY || process.env.OPENAI_API_KEY;
@@ -228,11 +235,12 @@ async function install() {
   }
   console.log(`
 ── done ────────────────────────────────────────────────────────
-Enable ARMIN per environment:
+${registered
+    ? 'ARMIN is enabled in your opencode config ("armin": { "enabled": true }).\nRestart opencode to activate it; remove "enabled" to turn it off.'
+    : "ARMIN is not enabled yet — follow the manual setup steps above."}
 
-    export ARMIN_ENABLED=1
-
-Optional:
+Optional overrides (env wins over config):
+    ARMIN_ENABLED=1                force-enable without the config entry
     ARMIN_EXTRACTION_MODE=jev      System One extraction (default; needs
                                    TYPESAFE_AI_API_KEY or OPENROUTER_API_KEY)
     ARMIN_JEV_PROVIDER=openrouter  route jev via OpenRouter (auto-detected

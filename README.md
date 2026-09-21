@@ -79,8 +79,9 @@ export TYPESAFE_AI_API_KEY=...        # typesafe.ai direct
 #    "armin": { "typesafeKey": "..." }
 #    "armin": { "jevProvider": "openrouter", "openrouterKey": "..." }
 
-# 3. Enable it per environment (the plugin itself is global, the engine opt-in)
-export ARMIN_ENABLED=1
+# 3. Done — `armin install` writes "armin": { "enabled": true } into your
+#    global opencode config. Escape hatch (env wins over config):
+# export ARMIN_ENABLED=1              # enable without the config entry
 # optional knobs:
 # ARMIN_ENGINE_BIN=~/.local/bin/armin-engine
 # ARMIN_MODEL=...                extraction model override
