@@ -1,39 +1,47 @@
 /**
- * ARMIN — reasoning-graph middleware for opencode.
+ * ARMIN — reasoning-graph middleware for opencode (v1 and v2).
  *
  * Spawns the `armin-engine` Rust sidecar, passively captures the session's
  * tool calls and assistant/user prose into an argument graph, and pushes a
  * compact reasoning-state brief into the system prompt so decisions, open
  * questions, and contradictions survive context compaction.
  *
- * Opt-in: either set `ARMIN_ENABLED=1` (or `ARMIN_ENGINE_BIN`), or register
- * the plugin with options (the form `armin install` writes — schema-safe,
- * passed straight to this factory):
+ * One entrypoint serves both opencode generations. V2 reads `id` + `setup()`
+ * from the default export; V1 (1.18.29+) reads `server()` from that same
+ * object, and older V1 releases call the exported plugin function.
  *
+ * Opt-in: either set `ARMIN_ENABLED=1` (or `ARMIN_ENGINE_BIN`), or register
+ * the plugin with options — the schema-safe config channel, in both versions:
+ *
+ *   // opencode v1
+ *   { "plugin": [["armin-opencode@<version>", { ...options }]] }
+ *
+ *   // opencode v2
+ *   { "plugins": [{ "package": "armin-opencode@<version>", "options": { ...options } }] }
+ *
+ *   // options (identical in both)
  *   {
- *     "plugin": [["armin-opencode@<version>", {
- *       "enabled": true,
- *       "provider": "anthropic",          // anthropic | openai (default: infer from keys)
- *       "apiKey": "sk-...",               // sent to the sidecar only; env key wins if both set
- *       "typesafeKey": "...",             // Typesafe System One key (jev is the
+ *     "enabled": true,
+ *     "provider": "anthropic",          // anthropic | openai (default: infer from keys)
+ *     "apiKey": "sk-...",               // sent to the sidecar only; env key wins if both set
+ *     "typesafeKey": "...",             // Typesafe System One key (jev is the
  *                                         // default extraction mode); env wins
- *       "jevProvider": "typesafe",        // typesafe | openrouter — which relay serves
+ *     "jevProvider": "typesafe",        // typesafe | openrouter — which relay serves
  *                                         // the System One API (openrouter bills
  *                                         // your OpenRouter account); env wins
- *       "openrouterKey": "sk-or-...",     // OpenRouter key, used when jevProvider is
+ *     "openrouterKey": "sk-or-...",     // OpenRouter key, used when jevProvider is
  *                                         // "openrouter"; env wins
- *       "model": "session",               // "session" = follow the live session model
+ *     "model": "session",               // "session" = follow the live session model
  *                                         // "small"  = reuse opencode's small_model setting
  *                                         // any string = fixed extraction model
- *       "batchMs": 15000,                 // LLM extraction debounce window
- *       "batchEvents": 10,                // events per LLM extraction call
- *       "dbDir": "~/.opencode/armin"      // per-project graph databases
+ *     "batchMs": 15000,                 // LLM extraction debounce window
+ *     "batchEvents": 10,                // events per LLM extraction call
+ *     "dbDir": "~/.opencode/armin"      // per-project graph databases
  *                                         // (keyed by git origin remote; path
  *                                         // fallback for non-git dirs)
- *       "port": 4545,                     // optional fixed engine port (default:
+ *     "port": 4545,                     // optional fixed engine port (default:
  *                                         // OS auto-assign; auto-falls back when
  *                                         // the port is busy); env wins
- *     }]]
  *   }
  *
  * Legacy fallback: an `armin` section in any opencode config file
@@ -50,14 +58,20 @@
  * extraction uses `apiKey`/environment API keys; the session *model* can
  * still be followed with "model": "session".
  */
-import type { Plugin } from "@opencode-ai/plugin"
-import { tool } from "@opencode-ai/plugin"
+import { homedir } from "node:os"
+// Type-only imports: the SDKs are compile-time contracts. Neither SDK is
+// imported at module load — the V1 SDK is pulled in lazily by the V1 factory,
+// so a V2 host never touches the V1 package (and vice versa).
+import type { Plugin as PluginV1 } from "@opencode-ai/plugin"
+import type { Plugin as PluginV2 } from "@opencode/plugin"
 
 // ── Configuration ─────────────────────────────────────────────────────────────
 
 const DEBUG = process.env.ARMIN_DEBUG === "1"
 const MAX_RESTARTS = 3
 const MAX_TEXT_CHARS = 2000
+/** HOME with a real fallback: an unset HOME must not leak literal "~" into paths. */
+const HOME = process.env.HOME || homedir()
 
 function log(...args: unknown[]) {
   if (DEBUG) console.log("[armin]", ...args)
@@ -126,7 +140,7 @@ async function loadArminConfig(worktree: string): Promise<{
   armin: Record<string, unknown>
   smallModel?: string
 }> {
-  const home = process.env.HOME ?? "~"
+  const home = HOME
   const candidates = [
     // global (same order as opencode itself: later files win)
     `${home}/.config/opencode/opencode.jsonc`,
@@ -196,7 +210,7 @@ async function resolveEngineBin(worktree: string): Promise<string> {
     process.env.ARMIN_ENGINE_BIN,
     `${worktree}/armin-core/target/release/armin-engine`,
     `${worktree}/../armin-core/target/release/armin-engine`,
-    `${process.env.HOME}/.local/bin/armin-engine`,
+    `${HOME}/.local/bin/armin-engine`,
   ].filter((c): c is string => !!c)
   for (const candidate of candidates) {
     try {
@@ -334,9 +348,11 @@ class Sidecar {
     while (Date.now() < deadline) {
       let chunk: Awaited<ReturnType<typeof reader.read>> | null
       try {
+        // Race against the remaining deadline (not the full timeout again):
+        // keeps the total wait bounded by timeoutMs even with slow chunks.
         chunk = await Promise.race([
           reader.read(),
-          sleep(timeoutMs).then(() => null),
+          sleep(Math.max(0, deadline - Date.now())).then(() => null),
         ])
       } catch {
         break
@@ -470,33 +486,226 @@ function extractFiles(args: unknown): string[] {
   return [...new Set(out)].slice(0, 8)
 }
 
-const ArminPlugin: Plugin = async (ctx, options) => {
+/** Extract the "Binding here" section from a reasoning-state brief for the
+ * optional tool-output footer. The engine renders the brief as
+ * `<reasoning-state ...>` with sections like "Heading (N):\n- item", and
+ * "Binding here" is NOT the last section — parsing must stop at the next
+ * section heading or it would swallow unrelated debt bullets. Returns null
+ * when the section is absent or has no items. */
+function bindingsFooter(brief: string): string | null {
+  const start = brief.search(/^Binding here\b/m)
+  if (start === -1) return null
+  const body = brief.slice(start).split("\n")
+  body.shift() // the "Binding here (N):" heading itself
+  const lines: string[] = []
+  for (const line of body) {
+    if (line.startsWith("- ")) {
+      lines.push(line)
+      if (lines.length >= 3) break
+    } else if (line.trim() !== "") {
+      break // next section heading (e.g. "Unverified edits (1):")
+    }
+  }
+  return lines.length > 0 ? lines.join("\n") : null
+}
+
+// ── Shared tool operations ───────────────────────────────────────────────────
+// One implementation per tool, wrapped by the v1 (zod `tool()`) and v2 (JSON
+// schema + ctx.tool.transform) surfaces, so the two generations cannot drift.
+
+type RecordDecisionInput = {
+  label: string
+  description: string
+  resolves?: string[]
+  resolutions?: string[]
+  files?: string[]
+}
+type RaiseQuestionInput = { label: string; description: string; files?: string[] }
+type ResolveQuestionInput = { question_id: string; resolver_node_id: string; reasoning: string }
+type InvalidateAssumptionInput = { node_id: string; rationale: string }
+
+const TOOL_DESCRIPTION = {
+  queryGraph:
+    "Ask a question about this session's reasoning graph (decisions, evidence, assumptions, contradictions). Returns an answer with a trace of node IDs usable in resolve_question.",
+  recordDecision:
+    "Record a decision you made, with its rationale. Optionally pass question node IDs (from query_graph trace) that this decision resolves.",
+  raiseQuestion:
+    "Record an unresolved question so it is tracked as reasoning debt and resurfaces in later turns and after compaction.",
+  resolveQuestion:
+    "Mark a tracked question as resolved by linking it to a node (use node IDs from query_graph's trace).",
+  invalidateAssumption:
+    "Mark a previously recorded assumption as no longer valid (e.g. a constraint turned out to be false).",
+  getStatus:
+    "Get the session's reasoning status: decisions with validation state, reasoning debt (unresolved questions, contradictions, unsupported claims), and top risks.",
+} as const
+
+async function queryGraph(api: EngineClient, question: string): Promise<string> {
+  const res = await api.post<{ answer: string; trace: string[]; cited_events: string[] }>("/query", {
+    question,
+  })
+  if (!res) return "Reasoning graph is unavailable."
+  if (!res.answer && !res.trace?.length) return "The graph has no relevant reasoning recorded yet."
+  return [
+    res.answer,
+    "",
+    `Trace (node IDs): ${JSON.stringify(res.trace)}`,
+    `Cited events: ${JSON.stringify(res.cited_events)}`,
+  ].join("\n")
+}
+
+async function recordDecision(
+  api: EngineClient,
+  args: RecordDecisionInput,
+  sessionID: string,
+): Promise<string> {
+  const res = await api.post<{ node_id: string; edge_ids: number[] }>("/agent/decision", {
+    label: args.label,
+    description: args.description,
+    session_id: sessionID,
+    resolves: args.resolves ?? [],
+    resolutions: args.resolutions ?? [],
+    files: args.files ?? [],
+  })
+  return res
+    ? `Recorded decision ${res.node_id}${res.edge_ids?.length ? ` (resolved ${res.edge_ids.length} question(s))` : ""}`
+    : "Reasoning graph is unavailable; decision not recorded."
+}
+
+async function raiseQuestion(
+  api: EngineClient,
+  args: RaiseQuestionInput,
+  sessionID: string,
+): Promise<string> {
+  const res = await api.post<{ node_id: string }>("/agent/question", {
+    label: args.label,
+    description: args.description,
+    session_id: sessionID,
+    files: args.files ?? [],
+  })
+  return res ? `Recorded question ${res.node_id}` : "Reasoning graph is unavailable; question not recorded."
+}
+
+async function resolveQuestion(api: EngineClient, args: ResolveQuestionInput): Promise<string> {
+  const res = await api.post("/resolve", args)
+  return res ? `Resolved ${args.question_id}` : "Reasoning graph is unavailable."
+}
+
+async function invalidateAssumption(
+  api: EngineClient,
+  args: InvalidateAssumptionInput,
+): Promise<string> {
+  const res = await api.post("/invalidate", args)
+  return res ? `Invalidated ${args.node_id}` : "Reasoning graph is unavailable."
+}
+
+async function reasoningStatus(api: EngineClient): Promise<string> {
+  const [decisions, debt, risks] = await Promise.all([
+    api.get<{ label: string; status: string }[]>("/decisions"),
+    api.get<{ items: { debt_type: string; description: string }[]; total_score: number }>("/debt"),
+    api.get<{ label: string; impact_score: number }[]>("/risks"),
+  ])
+  if (!decisions && !debt) return "Reasoning graph is unavailable."
+  const parts: string[] = []
+  if (Array.isArray(decisions) && decisions.length) {
+    parts.push(
+      "## Decisions\n" + decisions.slice(0, 10).map((d) => `- [${d.status}] ${d.label}`).join("\n"),
+    )
+  }
+  if (debt?.items?.length) {
+    parts.push(
+      `## Reasoning debt (score ${debt.total_score})\n` +
+        debt.items
+          .slice(0, 10)
+          .map((i) => `- ${i.debt_type}: ${i.description}`)
+          .join("\n"),
+    )
+  }
+  if (Array.isArray(risks) && risks.length) {
+    parts.push(
+      "## Risks\n" +
+        risks
+          .slice(0, 5)
+          .map((r) => `- (${r.impact_score?.toFixed?.(2) ?? "?"}) ${r.label}`)
+          .join("\n"),
+    )
+  }
+  return parts.join("\n\n") || "No reasoning recorded yet."
+}
+
+/** Decisions + open questions re-stated in a compaction request so the
+ * reasoning survives the summary. */
+async function compactionContext(api: EngineClient): Promise<string> {
+  const [decisions, debt] = await Promise.all([
+    api.get<any[]>("/decisions"),
+    api.get<{ items: { debt_type: string; description: string }[] }>("/debt"),
+  ])
+  const lines: string[] = []
+  if (Array.isArray(decisions) && decisions.length) {
+    lines.push("Decisions made in this session (do not re-litigate):")
+    for (const d of decisions.slice(0, 8)) {
+      lines.push(`- [${d.status}] ${d.label}`)
+    }
+  }
+  const questions = (debt?.items ?? []).filter((i) => String(i.debt_type).includes("Question"))
+  if (questions.length) {
+    lines.push("Open questions that remain unresolved:")
+    for (const q of questions.slice(0, 8)) {
+      lines.push(`- ${q.description}`)
+    }
+  }
+  return lines.join("\n")
+}
+
+// ── Shared startup (v1 + v2) ─────────────────────────────────────────────────
+
+type ArminRuntime = {
+  api: EngineClient
+  capture: Capture
+  sidecar: Sidecar
+  briefFooter: boolean
+  followSessionModel: boolean
+  rememberFiles: (files: string[]) => void
+  pushSessionModel: (model: string | undefined) => void
+  brief: () => Promise<{ brief: string; empty: boolean } | null>
+  ingestAssistantText: (sessionID: string, partID: string, text: string) => void
+}
+
+type ArminStartup =
+  | { status: "disabled" }
+  | { status: "inert"; dispose: () => Promise<void> }
+  | ({ status: "active" } & ArminRuntime)
+
+/** Resolve config, start the sidecar, and wire the shared capture/brief state.
+ * Both the v1 factory and the v2 setup() start here. */
+async function startArmin(
+  opts: Record<string, unknown>,
+  worktree: string,
+  enableHint: string,
+): Promise<ArminStartup> {
   // Config precedence: engine defaults < config files < plugin options < env
-  // vars. The tuple options ("plugin": [["armin-opencode@x", {...}]]) are the
+  // vars. The registration options ("plugin": [["armin-opencode@x", {...}]] in
+  // v1, "plugins": [{ "package": ..., "options": {...} }] in v2) are the
   // schema-safe channel; the raw-file "armin" section is the legacy fallback
   // (opencode strips unknown top-level keys from the resolved config, so the
   // section is re-read from the files directly).
-  const fileConfig = await loadArminConfig(ctx.worktree)
+  const fileConfig = await loadArminConfig(worktree)
   const fileArmin = fileConfig.armin
-  const opts = (options ?? {}) as Record<string, unknown>
   const armin: Record<string, unknown> = { ...fileArmin, ...opts }
 
   const enabledViaConfig = armin.enabled === true
   const enabledViaEnv = process.env.ARMIN_ENABLED === "1" || !!process.env.ARMIN_ENGINE_BIN
   if (!enabledViaConfig && !enabledViaEnv) {
-    console.log(
-      "[armin] disabled — enable with \"plugin\": [[\"armin-opencode\", { \"enabled\": true }]] or ARMIN_ENABLED=1",
-    )
-    return {}
+    console.log(`[armin] disabled — enable with ${enableHint} or ARMIN_ENABLED=1`)
+    return { status: "disabled" }
   }
 
   const cfgStr = (key: string, envKey: string): string | undefined =>
     (process.env[envKey] as string | undefined) ??
     (typeof armin[key] === "string" ? (armin[key] as string) : undefined)
 
-  const dbDir = cfgStr("dbDir", "ARMIN_DB_DIR") ?? `${process.env.HOME}/.opencode/armin`
-  const engineBin = await resolveEngineBin(ctx.worktree)
-  const dbFile = dbPathFor(dbDir, ctx.worktree)
+  const dbDir = cfgStr("dbDir", "ARMIN_DB_DIR") ?? `${HOME}/.opencode/armin`
+  const engineBin = await resolveEngineBin(worktree)
+  const dbFile = dbPathFor(dbDir, worktree)
   try {
     await import("node:fs").then((fs) => fs.mkdirSync(dbDir, { recursive: true }))
   } catch {
@@ -575,7 +784,7 @@ const ArminPlugin: Plugin = async (ctx, options) => {
       `[armin] INERT — engine did not start (binary: ${engineBin}). ` +
         `Run "armin doctor" to diagnose; ARMIN_DEBUG=1 for verbose logs.`,
     )
-    return { dispose: () => sidecar.dispose() }
+    return { status: "inert", dispose: () => sidecar.dispose() }
   }
 
   const api = new EngineClient(sidecar)
@@ -620,7 +829,7 @@ const ArminPlugin: Plugin = async (ctx, options) => {
       if (!snap || (snap.nodes?.length ?? 0) > 0) return
       const fs = await import("node:fs")
       const doc = ["AGENTS.md", "CLAUDE.md"]
-        .map((f) => `${ctx.worktree}/${f}`)
+        .map((f) => `${worktree}/${f}`)
         .find((p) => fs.existsSync(p))
       if (!doc) return
       const content = fs.readFileSync(doc, "utf-8")
@@ -664,6 +873,48 @@ const ArminPlugin: Plugin = async (ctx, options) => {
     }
     capture.ingest(sessionID, "utterance", "assistant", text)
   }
+  const pushSessionModel = (model: string | undefined) => {
+    if (!model || model === lastPushedModel) return
+    lastPushedModel = model
+    void api.post("/config", { model })
+  }
+  /** Scoped reasoning-state brief for what the agent is touching right now. */
+  const brief = async () => {
+    const filesParam =
+      recentFiles.length > 0 ? `?files=${encodeURIComponent(recentFiles.slice(0, 10).join(","))}` : ""
+    return api.get<{ brief: string; empty: boolean }>(`/state/brief${filesParam}`)
+  }
+
+  return {
+    status: "active",
+    api,
+    capture,
+    sidecar,
+    briefFooter,
+    followSessionModel,
+    rememberFiles,
+    pushSessionModel,
+    brief,
+    ingestAssistantText,
+  }
+}
+
+// ── Plugin: opencode v1 ──────────────────────────────────────────────────────
+
+const ArminPlugin: PluginV1 = async (ctx, options) => {
+  // V1-only runtime dependency. Loaded here, not at module scope, so the V2
+  // host (which never installs @opencode-ai/plugin) can load this file.
+  const { tool } = await import("@opencode-ai/plugin")
+  const startup = await startArmin(
+    (options ?? {}) as Record<string, unknown>,
+    ctx.worktree,
+    `"plugin": [["armin-opencode", { "enabled": true }]]`,
+  )
+  if (startup.status === "disabled") return {}
+  if (startup.status === "inert") return { dispose: () => startup.dispose() }
+
+  const { api, capture, sidecar, briefFooter, followSessionModel } = startup
+  const { rememberFiles, pushSessionModel, brief, ingestAssistantText } = startup
 
   return {
     dispose: () => sidecar.dispose(),
@@ -681,20 +932,10 @@ const ArminPlugin: Plugin = async (ctx, options) => {
       // mutating tool outputs — the tool result is model context at exactly
       // the moment a remembered constraint matters.
       if (briefFooter && files.length > 0) {
-        const filesParam = encodeURIComponent(recentFiles.slice(0, 10).join(","))
-        const res = await api.get<{ brief: string; empty: boolean }>(
-          `/state/brief?files=${filesParam}`,
-        )
-        if (res && !res.empty && res.brief.includes("Binding here")) {
-          const binding = res.brief
-            .split("Binding here")[1]
-            ?.split("\n")
-            .filter((l) => l.startsWith("- "))
-            .slice(0, 3)
-            .join("\n")
-          if (binding) {
-            output.output = `${output.output ?? ""}\n\n[ARMIN — settled decisions/rules for these files]\n${binding}`
-          }
+        const res = await brief()
+        const binding = res && !res.empty ? bindingsFooter(res.brief) : null
+        if (binding) {
+          output.output = `${output.output ?? ""}\n\n[ARMIN — settled decisions/rules for these files]\n${binding}`
         }
       }
     },
@@ -712,13 +953,7 @@ const ArminPlugin: Plugin = async (ctx, options) => {
     "chat.message": async (input, output) => {
       // Follow the live session model if configured: push it to the engine
       // whenever it changes (cheap localhost POST, fire-and-forget).
-      if (followSessionModel && input.model?.modelID) {
-        const modelID = input.model.modelID
-        if (modelID && modelID !== lastPushedModel) {
-          lastPushedModel = modelID
-          void api.post("/config", { model: modelID })
-        }
-      }
+      if (followSessionModel) pushSessionModel(input.model?.modelID)
       const texts = (output.parts ?? [])
         .filter((p: any) => p.type === "text")
         .map((p: any) => p.text ?? "")
@@ -731,13 +966,7 @@ const ArminPlugin: Plugin = async (ctx, options) => {
     // ── Push: zero-cost reasoning-state reminder on every turn ────────
     "experimental.chat.system.transform": async (_input, output) => {
       try {
-        const filesParam =
-          recentFiles.length > 0
-            ? `?files=${encodeURIComponent(recentFiles.slice(0, 10).join(","))}`
-            : ""
-        const res = await api.get<{ brief: string; empty: boolean }>(
-          `/state/brief${filesParam}`,
-        )
+        const res = await brief()
         if (res && !res.empty && res.brief) {
           output.system.push(
             "Reasoning state (ARMIN): tracked decisions, rules, and open items. " +
@@ -752,57 +981,24 @@ const ArminPlugin: Plugin = async (ctx, options) => {
 
     // ── Reasoning survives compaction ─────────────────────────────────
     "experimental.session.compacting": async (_input, output) => {
-      const [decisions, debt] = await Promise.all([
-        api.get<any[]>("/decisions"),
-        api.get<{ items: { debt_type: string; description: string }[] }>("/debt"),
-      ])
-      const lines: string[] = []
-      if (Array.isArray(decisions) && decisions.length) {
-        lines.push("Decisions made in this session (do not re-litigate):")
-        for (const d of decisions.slice(0, 8)) {
-          lines.push(`- [${d.status}] ${d.label}`)
-        }
-      }
-      const questions = (debt?.items ?? []).filter((i) =>
-        String(i.debt_type).includes("Question"),
-      )
-      if (questions.length) {
-        lines.push("Open questions that remain unresolved:")
-        for (const q of questions.slice(0, 8)) {
-          lines.push(`- ${q.description}`)
-        }
-      }
-      if (lines.length) output.context.push(lines.join("\n"))
+      const summary = await compactionContext(api)
+      if (summary) output.context.push(summary)
     },
 
     // ── Tools ──────────────────────────────────────────────────────────
     tool: {
       query_graph: tool({
-        description:
-          "Ask a question about this session's reasoning graph (decisions, evidence, assumptions, contradictions). Returns an answer with a trace of node IDs usable in resolve_question.",
+        description: TOOL_DESCRIPTION.queryGraph,
         args: {
           question: tool.schema.string().describe("The question to answer from the reasoning graph"),
         },
         async execute(args) {
-          const res = await api.post<{ answer: string; trace: string[]; cited_events: string[] }>(
-            "/query",
-            { question: args.question },
-          )
-          if (!res) return "Reasoning graph is unavailable."
-          if (!res.answer && !res.trace?.length)
-            return "The graph has no relevant reasoning recorded yet."
-          return [
-            res.answer,
-            "",
-            `Trace (node IDs): ${JSON.stringify(res.trace)}`,
-            `Cited events: ${JSON.stringify(res.cited_events)}`,
-          ].join("\n")
+          return queryGraph(api, args.question)
         },
       }),
 
       record_decision: tool({
-        description:
-          "Record a decision you made, with its rationale. Optionally pass question node IDs (from query_graph trace) that this decision resolves.",
+        description: TOOL_DESCRIPTION.recordDecision,
         args: {
           label: tool.schema.string().describe("Short summary, max ~15 words"),
           description: tool.schema.string().describe("Detailed rationale"),
@@ -811,110 +1007,337 @@ const ArminPlugin: Plugin = async (ctx, options) => {
           files: tool.schema.array(tool.schema.string()).optional().describe("Related file paths"),
         },
         async execute(args, context) {
-          const res = await api.post<{ node_id: string; edge_ids: string[] }>("/agent/decision", {
-            label: args.label,
-            description: args.description,
-            session_id: context.sessionID,
-            resolves: args.resolves ?? [],
-            resolutions: args.resolutions ?? [],
-            files: args.files ?? [],
-          })
-          return res
-            ? `Recorded decision ${res.node_id}${res.edge_ids.length ? ` (resolved ${res.edge_ids.length} question(s))` : ""}`
-            : "Reasoning graph is unavailable; decision not recorded."
+          return recordDecision(api, args, context.sessionID)
         },
       }),
 
       raise_question: tool({
-        description:
-          "Record an unresolved question so it is tracked as reasoning debt and resurfaces in later turns and after compaction.",
+        description: TOOL_DESCRIPTION.raiseQuestion,
         args: {
           label: tool.schema.string().describe("Short summary of the question, max ~15 words"),
           description: tool.schema.string().describe("Full question and context"),
           files: tool.schema.array(tool.schema.string()).optional().describe("Related file paths"),
         },
         async execute(args, context) {
-          const res = await api.post<{ node_id: string }>("/agent/question", {
-            label: args.label,
-            description: args.description,
-            session_id: context.sessionID,
-            files: args.files ?? [],
-          })
-          return res
-            ? `Recorded question ${res.node_id}`
-            : "Reasoning graph is unavailable; question not recorded."
+          return raiseQuestion(api, args, context.sessionID)
         },
       }),
 
       resolve_question: tool({
-        description:
-          "Mark a tracked question as resolved by linking it to a node (use node IDs from query_graph's trace).",
+        description: TOOL_DESCRIPTION.resolveQuestion,
         args: {
           question_id: tool.schema.string(),
           resolver_node_id: tool.schema.string(),
           reasoning: tool.schema.string().describe("How the resolver answers the question"),
         },
         async execute(args) {
-          const res = await api.post("/resolve", args)
-          return res ? `Resolved ${args.question_id}` : "Reasoning graph is unavailable."
+          return resolveQuestion(api, args)
         },
       }),
 
       invalidate_assumption: tool({
-        description:
-          "Mark a previously recorded assumption as no longer valid (e.g. a constraint turned out to be false).",
+        description: TOOL_DESCRIPTION.invalidateAssumption,
         args: {
           node_id: tool.schema.string(),
           rationale: tool.schema.string().describe("Why the assumption no longer holds"),
         },
         async execute(args) {
-          const res = await api.post("/invalidate", args)
-          return res ? `Invalidated ${args.node_id}` : "Reasoning graph is unavailable."
+          return invalidateAssumption(api, args)
         },
       }),
 
       get_status: tool({
-        description:
-          "Get the session's reasoning status: decisions with validation state, reasoning debt (unresolved questions, contradictions, unsupported claims), and top risks.",
+        description: TOOL_DESCRIPTION.getStatus,
         args: {},
         async execute() {
-          const [decisions, debt, risks] = await Promise.all([
-            api.get<{ label: string; status: string }[]>("/decisions"),
-            api.get<{ items: { debt_type: string; description: string }[]; total_score: number }>("/debt"),
-            api.get<{ label: string; impact_score: number }[]>("/risks"),
-          ])
-          if (!decisions && !debt) return "Reasoning graph is unavailable."
-          const parts: string[] = []
-          if (Array.isArray(decisions) && decisions.length) {
-            parts.push(
-              "## Decisions\n" +
-                decisions.slice(0, 10).map((d) => `- [${d.status}] ${d.label}`).join("\n"),
-            )
-          }
-          if (debt?.items?.length) {
-            parts.push(
-              `## Reasoning debt (score ${debt.total_score})\n` +
-                debt.items
-                  .slice(0, 10)
-                  .map((i) => `- ${i.debt_type}: ${i.description}`)
-                  .join("\n"),
-            )
-          }
-          if (Array.isArray(risks) && risks.length) {
-            parts.push(
-              "## Risks\n" +
-                risks
-                  .slice(0, 5)
-                  .map((r) => `- (${r.impact_score?.toFixed?.(2) ?? "?"}) ${r.label}`)
-                  .join("\n"),
-            )
-          }
-          return parts.join("\n\n") || "No reasoning recorded yet."
+          return reasoningStatus(api)
         },
       }),
     },
   }
 }
 
+// ── Plugin: opencode v2 ──────────────────────────────────────────────────────
+
+type ToolResultLike = { readonly output?: unknown; readonly content?: unknown }
+
+/** Flatten a V2 tool result to text for the capture stream. */
+function resultText(result: ToolResultLike): string {
+  if (typeof result.output === "string") return result.output
+  if (typeof result.content === "string") return result.content
+  if (Array.isArray(result.content)) {
+    return result.content
+      .map((part) =>
+        part && typeof part === "object" && (part as { type?: string }).type === "text"
+          ? String((part as { text?: unknown }).text ?? "")
+          : "",
+      )
+      .filter(Boolean)
+      .join("\n")
+  }
+  if (result.output === undefined) return ""
+  try {
+    return JSON.stringify(result.output) ?? ""
+  } catch {
+    return ""
+  }
+}
+
+/** Append the scoped-memory footer without discarding the result's shape. */
+function withFooter(result: ToolResultLike, text: string): ToolResultLike {
+  if (typeof result.output === "string") return { ...result, output: result.output + text }
+  if (typeof result.content === "string") return { ...result, content: result.content + text }
+  if (Array.isArray(result.content)) return { ...result, content: [...result.content, { type: "text", text }] }
+  return { ...result, content: text }
+}
+
+/** V2 tool registry entries (JSON Schema inputs instead of v1 zod args). */
+function v2Tools(api: EngineClient) {
+  const object = (properties: Record<string, unknown>, required: string[] = []) => ({
+    type: "object" as const,
+    properties,
+    ...(required.length > 0 ? { required } : {}),
+    additionalProperties: false,
+  })
+  const stringList = (description: string) => ({
+    type: "array" as const,
+    items: { type: "string" as const },
+    description,
+  })
+  const text = (content: string) => ({ content })
+  return [
+    {
+      name: "query_graph",
+      description: TOOL_DESCRIPTION.queryGraph,
+      input: object(
+        { question: { type: "string", description: "The question to answer from the reasoning graph" } },
+        ["question"],
+      ),
+      async execute(input: unknown) {
+        return text(await queryGraph(api, (input as { question: string }).question))
+      },
+    },
+    {
+      name: "record_decision",
+      description: TOOL_DESCRIPTION.recordDecision,
+      input: object(
+        {
+          label: { type: "string", description: "Short summary, max ~15 words" },
+          description: { type: "string", description: "Detailed rationale" },
+          resolves: stringList("Question node IDs this decision resolves"),
+          resolutions: stringList("Reasoning per resolution"),
+          files: stringList("Related file paths"),
+        },
+        ["label", "description"],
+      ),
+      async execute(input: unknown, context: { sessionID: string }) {
+        return text(await recordDecision(api, input as RecordDecisionInput, context.sessionID))
+      },
+    },
+    {
+      name: "raise_question",
+      description: TOOL_DESCRIPTION.raiseQuestion,
+      input: object(
+        {
+          label: { type: "string", description: "Short summary of the question, max ~15 words" },
+          description: { type: "string", description: "Full question and context" },
+          files: stringList("Related file paths"),
+        },
+        ["label", "description"],
+      ),
+      async execute(input: unknown, context: { sessionID: string }) {
+        return text(await raiseQuestion(api, input as RaiseQuestionInput, context.sessionID))
+      },
+    },
+    {
+      name: "resolve_question",
+      description: TOOL_DESCRIPTION.resolveQuestion,
+      input: object({
+        question_id: { type: "string" },
+        resolver_node_id: { type: "string" },
+        reasoning: { type: "string", description: "How the resolver answers the question" },
+      }),
+      async execute(input: unknown) {
+        return text(await resolveQuestion(api, input as ResolveQuestionInput))
+      },
+    },
+    {
+      name: "invalidate_assumption",
+      description: TOOL_DESCRIPTION.invalidateAssumption,
+      input: object({
+        node_id: { type: "string" },
+        rationale: { type: "string", description: "Why the assumption no longer holds" },
+      }),
+      async execute(input: unknown) {
+        return text(await invalidateAssumption(api, input as InvalidateAssumptionInput))
+      },
+    },
+    {
+      name: "get_status",
+      description: TOOL_DESCRIPTION.getStatus,
+      input: object({}),
+      async execute() {
+        return text(await reasoningStatus(api))
+      },
+    },
+  ]
+}
+
+const ArminPluginV2: PluginV2.Plugin = {
+  id: "armin",
+  async setup(ctx: PluginV2.Context) {
+    const startup = await startArmin(
+      (ctx.options ?? {}) as Record<string, unknown>,
+      ctx.location.directory,
+      `"plugins": [{ "package": "armin-opencode", "options": { "enabled": true } }]`,
+    )
+    if (startup.status === "disabled") return
+    if (startup.status === "inert") return startup.dispose
+
+    const { api, capture, sidecar, briefFooter, followSessionModel } = startup
+    const { rememberFiles, pushSessionModel, brief, ingestAssistantText } = startup
+
+    // Assistant prose: V2 has no message.part stream hook, so completed text
+    // blocks are taken from the server event stream ("session.text.ended").
+    const controller = new AbortController()
+    let payloadWarned = false // unexpected shape: warn once, then stay quiet
+    void (async () => {
+      try {
+        for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
+          if (event.type !== "session.text.ended") continue
+          const data = event.data as {
+            sessionID?: string
+            assistantMessageID?: string
+            ordinal?: number
+            text?: string
+          }
+          // Shape guard: opencode could rename or drop payload fields. Feed
+          // only well-formed events into the capture stream — a TypeError
+          // here would abort the for-await loop and silently end capture.
+          if (typeof data?.sessionID !== "string" || typeof data?.text !== "string") {
+            if (!payloadWarned) {
+              payloadWarned = true
+              console.log(
+                "[armin] unexpected session.text.ended payload (skipping; ARMIN_DEBUG=1 for details)",
+              )
+            }
+            log(
+              "unexpected session.text.ended payload:",
+              JSON.stringify(event.data) ?? String(event.data),
+            )
+            continue
+          }
+          const partID = `${data.assistantMessageID ?? "?"}:${data.ordinal ?? "?"}`
+          ingestAssistantText(data.sessionID, partID, data.text)
+        }
+      } catch (e) {
+        log("event stream stopped:", String(e))
+      }
+    })()
+
+    const registrations: { dispose: () => Promise<void> }[] = []
+
+    // User prompt (and, on the first model call, the live session model).
+    registrations.push(
+      await ctx.session.hook("prompt", (event) => {
+        capture.ingest(event.sessionID, "user_prompt", "user", event.prompt.text ?? "")
+      }),
+    )
+
+    // Zero-cost reasoning-state reminder on every model call of the agent loop.
+    registrations.push(
+      await ctx.session.hook("context", async (event) => {
+        if (followSessionModel) pushSessionModel(event.model?.id)
+        try {
+          const res = await brief()
+          if (res && !res.empty && res.brief) {
+            event.system.push({
+              type: "text",
+              text:
+                "Reasoning state (ARMIN): tracked decisions, rules, and open items. " +
+                "Use query_graph for detail. If a new request conflicts with a decision or rule " +
+                "below, say so explicitly before deviating.\n" +
+                res.brief,
+            })
+          }
+        } catch {
+          // Engine down — skip injection silently.
+        }
+      }),
+    )
+
+    // Reasoning survives compaction: the summary request carries the decisions
+    // and open questions that must not be re-litigated.
+    registrations.push(
+      await ctx.session.hook("compaction", async (event) => {
+        const summary = await compactionContext(api)
+        if (summary) event.system.push({ type: "text", text: summary })
+      }),
+    )
+
+    // Tool capture (and the optional, off-by-default brief footer).
+    registrations.push(
+      await ctx.tool.hook("execute.after", async (event) => {
+        const files = extractFiles(event.input)
+        rememberFiles(files)
+        const failed = event.status !== "completed"
+        // event.error is typed Error but hosts pass what they have (plain
+        // strings happen) — String() keeps this from printing "undefined".
+        const reason = failed
+          ? truncate(
+              typeof event.error === "string"
+                ? event.error
+                : String((event.error as { message?: string } | undefined)?.message ?? ""),
+              400,
+            )
+          : ""
+        const text = failed
+          ? `${event.tool} failed: ${reason}`
+          : `${event.tool}: ${truncate(resultText(event.result), 400)}`
+        capture.ingest(event.sessionID, "tool_call", "agent", text, {
+          toolName: event.tool,
+          files,
+        })
+        if (briefFooter && files.length > 0 && event.status === "completed") {
+          const res = await brief()
+          const binding = res && !res.empty ? bindingsFooter(res.brief) : null
+          if (binding) {
+            event.result = withFooter(
+              event.result,
+              `\n\n[ARMIN — settled decisions/rules for these files]\n${binding}`,
+            ) as typeof event.result
+          }
+        }
+      }),
+    )
+
+    // Tools
+    registrations.push(
+      await ctx.tool.transform((editor) => {
+        for (const definition of v2Tools(api)) editor.add(definition)
+      }),
+    )
+
+    return async () => {
+      controller.abort()
+      for (const registration of [...registrations].reverse()) {
+        try {
+          await registration.dispose()
+        } catch (e) {
+          log("dispose failed:", String(e))
+        }
+      }
+      await sidecar.dispose()
+    }
+  },
+}
+
 export const ArminPluginExport = ArminPlugin
-export default ArminPlugin
+
+// One entrypoint for both generations: V2 reads id + setup, V1 (1.18.29+)
+// reads server(). Older V1 releases call the exported plugin function, whose
+// identity is shared with `server` above, so it is never registered twice.
+export default {
+  ...ArminPluginV2,
+  server: ArminPlugin,
+}

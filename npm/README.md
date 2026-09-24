@@ -11,18 +11,23 @@ Prefer a global install over one-off `npx` runs: `npx` caches are evicted.
 
 `armin install` downloads the `armin-engine` sidecar binary for your platform
 from the [GitHub releases](https://github.com/bastian-seifert/armin/releases)
-and registers the plugin in your global opencode config as a pinned npm tuple:
+and registers the plugin in your global opencode config as a pinned npm entry —
+in the schema your opencode generation reads:
 
 ```jsonc
-{
-  "plugin": [["armin-opencode@<version>", { "enabled": true }]]
-}
+// opencode v1
+{ "plugin": [["armin-opencode@<version>", { "enabled": true }]] }
+
+// opencode v2
+{ "plugins": [{ "package": "armin-opencode@<version>", "options": { "enabled": true } }] }
 ```
 
 opencode then installs the package — with its `@opencode-ai/plugin` SDK
-dependency — into its own plugin cache on next start. Tuple options are the
-schema-safe config channel (opencode strips unknown top-level keys like the
-legacy `"armin": {...}` section; options are passed straight to the plugin).
+dependency — into its own plugin cache on next start. The options object is the
+schema-safe config channel in both versions (opencode strips unknown top-level
+keys like the legacy `"armin": {...}` section; options are passed straight to
+the plugin). The same package entrypoint implements both: v2 reads `id` +
+`setup()` from the default export, v1 reads `server()` from it.
 `ARMIN_ENABLED=1` remains as a per-environment escape hatch.
 
 Verify a install (registration form, engine binary, opencode's plugin cache,

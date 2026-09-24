@@ -120,13 +120,31 @@ CFG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/opencode"
 CFG_JSON="$CFG_DIR/opencode.json"
 CFG_JSONC="$CFG_DIR/opencode.jsonc"
 
+# Installed opencode generation: 2 registers under "plugins" with a
+# { package, options } entry, 1 under "plugin" with the file:// entry.
+# Unknown → the v1 form, which opencode v2 still normalizes.
+opencode_major() {
+    if [[ -n "${ARMIN_OPENCODE_MAJOR:-}" ]]; then
+        printf '%s' "$ARMIN_OPENCODE_MAJOR"
+        return
+    fi
+    if command -v opencode >/dev/null; then
+        opencode --version 2>/dev/null | grep -oE '^[0-9]+' | head -1
+    fi
+}
+
 register_plugin() {
     local cfg="$1"
     TS_KEY_INPUT="$TS_KEY_INPUT" OR_KEY_INPUT="$OR_KEY_INPUT" \
     WRITE_JEV_PROVIDER="$WRITE_JEV_PROVIDER" PORT_INPUT="$PORT_INPUT" \
+    OPENCODE_MAJOR="$(opencode_major)" \
     python3 - "$cfg" "$PLUGIN_PATH" <<'PYEOF'
 import json, re, sys, os
 cfg, plugin = sys.argv[1], sys.argv[2]
+# v2 reads "plugins": [{ package, options }]; v1 reads "plugin": ["file://…"].
+major = (os.environ.get("OPENCODE_MAJOR") or "").strip()
+v2 = major.isdigit() and int(major) >= 2
+key, other = ("plugins", "plugin") if v2 else ("plugin", "plugins")
 text = open(cfg).read() if os.path.exists(cfg) else ""
 # JSONC: strip // comments before parsing, restore later is best-effort —
 # if parsing fails we do not touch the file and print manual instructions.
@@ -134,28 +152,44 @@ try:
     stripped = re.sub(r"^\s*//.*$", "", text, flags=re.M)
     data = json.loads(stripped) if stripped.strip() else {}
 except Exception:
-    print(f"could not parse {cfg} — register the plugin manually:")
-    print(f'  add "plugin": ["file://{plugin}"] to your opencode config')
+    if v2:
+        print(f'could not parse {cfg} — register the plugin manually:\n  add {{ "plugins": [{{ "package": "file://{plugin}", "options": {{ "enabled": true }} }}] }}')
+    else:
+        print(f'could not parse {cfg} — register the plugin manually:\n  add "plugin": ["file://{plugin}"]')
     sys.exit(0)
-plugins = data.get("plugin", [])
+plugins = data.get(key, [])
 entry = "file://" + plugin
 armin = data.get("armin") or {}
 changed = False
 # Replace any previous armin plugin entries (stale file:// forms from older
-# installers, or npm tuples written by `armin install`) with the dev file://
+# installers, or npm entries written by `armin install`) with the dev file://
 # entry; duplicates would double-activate the plugin.
 def is_armin(p):
     if isinstance(p, str):
         return p.startswith("armin-opencode") or (p.startswith("file://") and p.endswith("/plugins/armin.ts"))
-    return isinstance(p, list) and len(p) == 2 and isinstance(p[0], str) and p[0].startswith("armin-opencode")
+    if isinstance(p, list):
+        return len(p) == 2 and isinstance(p[0], str) and p[0].startswith("armin-opencode")
+    if isinstance(p, dict):
+        return isinstance(p.get("package"), str) and p["package"].startswith("armin-opencode")
+    return False
 if any(is_armin(p) and p != entry for p in plugins):
     plugins = [entry] + [p for p in plugins if not is_armin(p)]
-    data["plugin"] = plugins
+    data[key] = plugins
     changed = True
 elif entry not in plugins:
     plugins.append(entry)
-    data["plugin"] = plugins
+    data[key] = plugins
     changed = True
+# A stale armin entry under the other generation's key double-activates.
+other_entries = data.get(other)
+if isinstance(other_entries, list):
+    kept = [p for p in other_entries if not is_armin(p)]
+    if len(kept) != len(other_entries):
+        if kept:
+            data[other] = kept
+        else:
+            data.pop(other, None)
+        changed = True
 ts_input = os.environ.get("TS_KEY_INPUT", "").strip()
 if ts_input and not os.environ.get("TYPESAFE_AI_API_KEY"):
     if armin.get("typesafeKey") != ts_input:

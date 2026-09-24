@@ -15,11 +15,13 @@
 #      layout, not the repo checkout)
 #   3. run `armin install` (non-TTY) with an isolated XDG_CONFIG_HOME
 #   4. run `armin doctor`
-#   5. run a real headless `opencode run` session in a scratch project and
+#   5. run the same install/doctor against the opencode v2 config form, and
+#      drive the v2 entrypoint (default export id + setup) with a stub context
+#   6. run a real headless `opencode run` session in a scratch project and
 #      assert the plugin's unconditional "[armin] ..." activation line or an
 #      explicit load-failure marker appears
 #
-# Requirements: node/npm, opencode on PATH, network for npm + model calls
+# Requirements: node/npm, bun, opencode on PATH, network for npm + model calls
 # (opencode needs at least one working model; the prompt is trivial).
 #
 # Usage: scripts/e2e/npm-registration.sh [--keep]
@@ -74,10 +76,13 @@ const out = execFileSync("tar", ["-xzf", tarball, "-O", "package/package.json"],
 const pkg = JSON.parse(out);
 const problems = [];
 if (pkg.main !== "plugins/armin.ts") problems.push(`"main" is ${JSON.stringify(pkg.main)}, opencode's server entrypoint detection needs "plugins/armin.ts"`);
-if (!pkg.dependencies?.["@opencode-ai/plugin"]) problems.push("missing dependency @opencode-ai/plugin — the plugin cannot resolve the SDK and loads nothing");
+// v2 resolves the entry through "exports" ("./server", then "."), not "main".
+if (pkg.exports?.["."] !== "./plugins/armin.ts" || pkg.exports?.["./server"] !== "./plugins/armin.ts")
+    problems.push(`"exports" must map "." and "./server" to ./plugins/armin.ts (opencode v2 entrypoint resolution), got ${JSON.stringify(pkg.exports)}`);
+if (!pkg.dependencies?.["@opencode-ai/plugin"]) problems.push("missing dependency @opencode-ai/plugin — opencode v1 cannot resolve the SDK and loads nothing");
 if (problems.length) { console.error("  " + problems.join("\n  ")); process.exit(1); }
 EOF
-pass "package metadata (main + SDK dependency)"
+pass "package metadata (main + exports + SDK dependency)"
 
 # ── 2. Install into a real prefix layout (NOT the repo checkout) ─────────────
 echo "── npm install into scratch prefix"
@@ -144,6 +149,103 @@ const cfg = JSON.parse(require("fs").readFileSync(process.argv[1], "utf-8"));
 if ("armin" in cfg) { console.error("  legacy armin section still present — should be migrated into tuple options"); process.exit(1); }
 ' "$CFG" || fail "legacy armin section not migrated"
 pass "legacy armin section migrated into tuple options"
+
+# ── 3b. opencode v2 config form ──────────────────────────────────────────────
+# v2 renamed "plugin" to "plugins" and the tuple to { package, options }.
+# Detection is overridden so this step is deterministic regardless of which
+# opencode happens to be on PATH.
+echo "── armin install (v2 config form)"
+V2_HOME="$WORK/v2"
+mkdir -p "$V2_HOME/home" "$V2_HOME/bin"
+cp "$HOME/.local/bin/armin-engine" "$V2_HOME/bin/armin-engine" 2>/dev/null || cp "$WORK/bin/armin-engine" "$V2_HOME/bin/armin-engine"
+XDG_CONFIG_HOME="$V2_HOME/xdg/config" \
+XDG_DATA_HOME="$V2_HOME/xdg/data" \
+XDG_CACHE_HOME="$V2_HOME/xdg/cache" \
+HOME="$V2_HOME/home" \
+ARMIN_BIN_DIR="$V2_HOME/bin" \
+ARMIN_OPENCODE_MAJOR=2 \
+    "$PKG_ROOT/bin/armin.js" install >"$WORK/install-v2.log" 2>&1 \
+    || fail "armin install (v2) failed (see $WORK/install-v2.log)"
+V2_CFG="$V2_HOME/xdg/config/opencode/opencode.json"
+node - "$V2_CFG" "$E2E_VERSION" <<'EOF' || fail "v2 registration form check failed"
+const cfg = JSON.parse(require("fs").readFileSync(process.argv[2], "utf-8"));
+const want = "armin-opencode@" + process.argv[3];
+const entries = Array.isArray(cfg.plugins) ? cfg.plugins : [];
+const hit = entries.find((p) => p && typeof p === "object" && p.package === want);
+if (!hit) {
+    console.error("  no { package, options } entry in \"plugins\": " + JSON.stringify(entries));
+    process.exit(1);
+}
+if (hit.options?.enabled !== true) { console.error("  options missing enabled:true"); process.exit(1); }
+if ((cfg.plugin || []).some((p) => JSON.stringify(p).includes("armin-opencode")))
+    { console.error("  stale armin entry left under the v1 \"plugin\" key — it would double-activate"); process.exit(1); }
+EOF
+pass "installer wrote the v2 { package, options } registration"
+
+XDG_CONFIG_HOME="$V2_HOME/xdg/config" \
+XDG_DATA_HOME="$V2_HOME/xdg/data" \
+XDG_CACHE_HOME="$V2_HOME/xdg/cache" \
+HOME="$V2_HOME/home" \
+ARMIN_BIN_DIR="$V2_HOME/bin" \
+    "$PKG_ROOT/bin/armin.js" doctor >"$WORK/doctor-v2.log" 2>&1 \
+    || fail "armin doctor (v2 config) reported problems (see $WORK/doctor-v2.log)"
+grep -q "v2 config form" "$WORK/doctor-v2.log" || fail "doctor did not recognize the v2 form: $(cat "$WORK/doctor-v2.log")"
+pass "armin doctor accepts the v2 registration form"
+
+# The dual entrypoint itself: v2 reads id + setup() from the default export.
+# No v2 binary is published, so drive setup() with a stub context and assert
+# the plugin registers its hooks and tools.
+echo "── v2 plugin entrypoint (stub context)"
+command -v bun >/dev/null || fail "bun not on PATH (needed for the v2 entrypoint check)"
+FAKE_ENGINE="$WORK/v2-home/.local/bin/armin-engine"
+mkdir -p "$(dirname "$FAKE_ENGINE")"
+cat >"$FAKE_ENGINE" <<'EOF'
+#!/usr/bin/env node
+const http = require("http");
+const args = process.argv.slice(2);
+const port = Number(args[args.indexOf("--port") + 1]) || 0;
+const srv = http.createServer((req, res) => {
+    res.setHeader("content-type", "application/json");
+    if (req.url.includes("/health")) res.end(JSON.stringify({ ok: true, extraction: "deterministic" }));
+    else if (req.url.includes("/state/brief")) res.end(JSON.stringify({ brief: "", empty: true }));
+    else res.end("{}");
+});
+srv.listen(port, "127.0.0.1", () => {
+    process.stdout.write(`ARMIN_PORT=${srv.address().port}\n`);
+});
+process.on("SIGTERM", () => process.exit(0));
+setInterval(() => {}, 1 << 30);
+EOF
+chmod +x "$FAKE_ENGINE"
+ARMIN_ENGINE_BIN="$FAKE_ENGINE" \
+ARMIN_DB_DIR="$WORK/v2-db" \
+ARMIN_PLUGIN_ENTRY="file://$PKG_ROOT/plugins/armin.ts" \
+    bun -e '
+const m = await import(process.env.ARMIN_PLUGIN_ENTRY);
+const plugin = m.default;
+if (typeof plugin.id !== "string" || typeof plugin.setup !== "function")
+    throw new Error("v2 entrypoint missing: default export needs id + setup()");
+if (typeof plugin.server !== "function")
+    throw new Error("v1 entrypoint missing: default export needs server()");
+const hooks = [];
+const tools = [];
+const cleanup = await plugin.setup({
+    options: { enabled: true },
+    location: { directory: process.cwd(), project: { id: "e2e", directory: process.cwd(), canonical: process.cwd() } },
+    event: { subscribe: () => ({ [Symbol.asyncIterator]: async function* () {} }) },
+    session: { hook: async (name) => { hooks.push(name); return { dispose: async () => {} } } },
+    tool: {
+        hook: async (name) => { hooks.push("tool." + name); return { dispose: async () => {} } },
+        transform: async (cb) => { cb({ add: (t) => tools.push(t), namespace() {}, update() {}, remove() {}, list: () => tools, get: () => undefined }); return { dispose: async () => {} } },
+    },
+});
+for (const want of ["prompt", "context", "compaction", "tool.execute.after"])
+    if (!hooks.includes(want)) throw new Error("v2 setup did not register hook: " + want);
+if (tools.length !== 6) throw new Error("v2 setup registered " + tools.length + " tools, expected 6");
+await cleanup();
+console.log("v2 entrypoint ok");
+' || fail "v2 entrypoint (id + setup) is broken"
+pass "v2 entrypoint registers hooks + tools and cleans up"
 
 # ── 4. armin doctor ──────────────────────────────────────────────────────────
 echo "── armin doctor"

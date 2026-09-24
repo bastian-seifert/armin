@@ -2,6 +2,7 @@
   "name": "armin-opencode-plugin",
   "private": true,
   "devDependencies": {
+    "@opencode/plugin": "2.0.16",
     "@types/bun": "latest"
   },
   "dependencies": {

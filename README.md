@@ -78,16 +78,22 @@ export TYPESAFE_AI_API_KEY=...        # typesafe.ai direct
 #    …or put it in the plugin options in your global opencode config instead
 #    (the installer writes this form; options win over the legacy "armin"
 #    section, which opencode strips from its resolved config anyway):
-#    "plugin": [["armin-opencode@<version>", { "typesafeKey": "..." }]]
-#    "plugin": [["armin-opencode@<version>", { "jevProvider": "openrouter",
-#                                              "openrouterKey": "..." }]]
+#    opencode v1 — "plugin": [["armin-opencode@<version>", { "typesafeKey": "..." }]]
+#    opencode v2 — "plugins": [{ "package": "armin-opencode@<version>",
+#                                "options": { "typesafeKey": "..." } }]
+#    …same for the OpenRouter relay:
+#    v1: { "jevProvider": "openrouter", "openrouterKey": "..." }
+#    v2: "options": { "jevProvider": "openrouter", "openrouterKey": "..." }
 #    Pin the engine port (default: auto-assign): { "port": 4545 } options
 
-# 3. Done — `armin install` registers
-#    "plugin": [["armin-opencode@<version>", { "enabled": true, ... }]]
-#    in your global opencode config (opencode installs the package with its
-#    SDK into its own plugin cache on next start). Verify with `armin doctor`.
-#    Escape hatch (env wins over config):
+# 3. Done — `armin install` registers the pinned package in your global
+#    opencode config, in the schema your opencode reads (options are the
+#    same for both):
+#    v1: "plugin":  [["armin-opencode@<version>", { "enabled": true, ... }]]
+#    v2: "plugins": [{ "package": "armin-opencode@<version>",
+#                      "options": { "enabled": true, ... } }]
+#    opencode installs the package with its SDK into its own plugin cache on
+#    next start. Verify with `armin doctor`. Escape hatch (env wins over config):
 # export ARMIN_ENABLED=1              # enable without the config entry
 # optional knobs:
 # ARMIN_ENGINE_BIN=~/.local/bin/armin-engine

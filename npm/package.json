@@ -12,6 +12,10 @@
     "armin": "bin/armin.js"
   },
   "main": "plugins/armin.ts",
+  "exports": {
+    ".": "./plugins/armin.ts",
+    "./server": "./plugins/armin.ts"
+  },
   "files": [
     "bin/",
     "plugins/",
