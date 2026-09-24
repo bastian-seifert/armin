@@ -4,6 +4,8 @@
  *
  *   armin install      download the armin-engine binary for this platform,
  *                      register the opencode plugin, print next steps
+ *   armin doctor       verify the plugin is registered, loadable, and the
+ *                      engine binary is in place
  *   armin --version    print the package version
  *
  * The engine binary is fetched from the matching GitHub release
@@ -17,6 +19,7 @@ const fs = require("fs");
 const https = require("https");
 const os = require("os");
 const path = require("path");
+const { fileURLToPath } = require("url");
 const zlib = require("zlib");
 
 const PKG_ROOT = path.join(__dirname, "..");
@@ -157,65 +160,242 @@ async function askForPort() {
   }
 }
 
-function registerPlugin() {
-  const plugin = path.join(PKG_ROOT, "plugins", "armin.ts");
-  if (!fs.existsSync(plugin)) throw new Error(`plugin not found at ${plugin}`);
+const ARMIN_SPEC = `armin-opencode@${PKG.version}`;
+
+/** True for any config entry referring to the armin plugin: pinned/unpinned
+ * npm specs, tuples, and file:// paths in any layout. */
+function isArminPluginEntry(item) {
+  if (typeof item === "string") {
+    return (
+      /^armin-opencode(@|$)/.test(item) ||
+      (item.startsWith("file://") && /\/plugins\/armin\.ts$/.test(item))
+    );
+  }
+  return (
+    Array.isArray(item) &&
+    typeof item[0] === "string" &&
+    /^armin-opencode(@|$)/.test(item[0])
+  );
+}
+
+function opencodeConfigPath() {
   const cfgDir = path.join(
     process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config"),
     "opencode",
   );
-  const cfgPath = fs.existsSync(path.join(cfgDir, "opencode.jsonc"))
-    ? path.join(cfgDir, "opencode.jsonc")
-    : path.join(cfgDir, "opencode.json");
-  let data = {};
-  if (fs.existsSync(cfgPath)) {
-    const text = fs.readFileSync(cfgPath, "utf-8");
-    try {
-      data = JSON.parse(text.replace(/^\s*\/\/.*$/gm, ""));
-    } catch {
-      console.log(`\nCould not parse ${cfgPath} — set up manually:\n  add "plugin": ["file://${plugin}"] and "armin": { "enabled": true } to your opencode config\n`);
-      return false;
-    }
+  const jsonc = path.join(cfgDir, "opencode.jsonc");
+  const json = path.join(cfgDir, "opencode.json");
+  return { cfgDir, cfgPath: fs.existsSync(jsonc) ? jsonc : json };
+}
+
+/** Parse the global opencode config (JSON, with a line-comment cleanup for
+ * JSONC). Throws on unparseable input. */
+function readOpencodeConfig(cfgPath) {
+  if (!fs.existsSync(cfgPath)) return {};
+  const text = fs.readFileSync(cfgPath, "utf-8");
+  return JSON.parse(text.replace(/^\s*\/\/.*$/gm, ""));
+}
+
+/** Register the plugin as an npm tuple entry:
+ *
+ *   "plugin": [["armin-opencode@<version>", { "enabled": true, ... }]]
+ *
+ * opencode installs the pinned package — together with its declared
+ * @opencode-ai/plugin dependency — into its own cache. The file:// form used
+ * by older installers cannot resolve the plugin SDK from a project's
+ * node_modules and loads nothing. Tuple options are also the schema-safe
+ * channel: opencode strips unknown top-level config keys (the legacy "armin"
+ * section survives only as raw-file re-reads), while options travel straight
+ * to the plugin factory. */
+function registerPlugin() {
+  const { cfgDir, cfgPath } = opencodeConfigPath();
+  let data;
+  try {
+    data = readOpencodeConfig(cfgPath);
+  } catch {
+    console.log(`\nCould not parse ${cfgPath} — set up manually:\n  add "plugin": [["${ARMIN_SPEC}", { "enabled": true }]] to your opencode config\n`);
+    return false;
   }
-  const entry = "file://" + plugin;
-  let changed = false;
-  const plugins = Array.isArray(data.plugin) ? data.plugin : [];
-  if (!plugins.includes(entry)) {
-    plugins.push(entry);
-    data.plugin = plugins;
-    changed = true;
-  }
-  // `armin install` is an explicit opt-in — enable in config so no
-  // per-shell env var is needed (ARMIN_ENABLED stays as escape hatch).
-  if (data.armin?.enabled !== true) {
-    data.armin = { ...(data.armin || {}), enabled: true };
-    changed = true;
-  }
+
+  // Tuple options: legacy "armin" keys migrate in; prompted values win.
+  const options = {
+    ...(data.armin && typeof data.armin === "object" ? data.armin : {}),
+    enabled: true,
+  };
   if (pendingTypesafeKey && !process.env.TYPESAFE_AI_API_KEY) {
-    data.armin = { ...(data.armin || {}), typesafeKey: pendingTypesafeKey };
-    changed = true;
+    options.typesafeKey = pendingTypesafeKey;
   }
   if (pendingOpenrouterKey && !process.env.OPENROUTER_API_KEY) {
-    data.armin = { ...(data.armin || {}), openrouterKey: pendingOpenrouterKey };
-    changed = true;
+    options.openrouterKey = pendingOpenrouterKey;
   }
-  // Persist the relay choice only when the user explicitly picked
-  // OpenRouter in the prompt (env-detected providers drive the sidecar
-  // via their env vars; writing nothing avoids overriding that later).
-  if (pendingJevProvider === "openrouter" && data.armin.jevProvider !== "openrouter") {
-    data.armin = { ...(data.armin || {}), jevProvider: "openrouter" };
-    changed = true;
+  if (pendingJevProvider === "openrouter") options.jevProvider = "openrouter";
+  if (pendingPort) options.port = pendingPort;
+
+  const plugins = Array.isArray(data.plugin) ? data.plugin : [];
+  const next = [];
+  let placed = false;
+  for (const item of plugins) {
+    if (isArminPluginEntry(item)) {
+      // One pinned tuple replaces any previous armin entry: the legacy
+      // file:// forms cannot resolve the SDK, and duplicates would
+      // double-activate the plugin.
+      if (!placed) next.push([ARMIN_SPEC, options]);
+      placed = true;
+    } else {
+      next.push(item);
+    }
   }
-  if (pendingPort && data.armin.port !== pendingPort) {
-    data.armin = { ...(data.armin || {}), port: pendingPort };
-    changed = true;
-  }
+  if (!placed) next.push([ARMIN_SPEC, options]);
+
+  const changed =
+    JSON.stringify(next) !== JSON.stringify(plugins) || data.armin !== undefined;
   if (changed) {
+    data.plugin = next;
+    delete data.armin; // migrated into the tuple options above
     fs.mkdirSync(cfgDir, { recursive: true });
     fs.writeFileSync(cfgPath, JSON.stringify(data, null, 2));
   }
-  console.log(`plugin registered in ${cfgPath}`);
+  console.log(`plugin registered in ${cfgPath}: "plugin": [["${ARMIN_SPEC}", { "enabled": true, ... }]]`);
   return true;
+}
+
+/** Post-install verification. "Installed but inert" is otherwise
+ * undetectable: opencode surfaces plugin load failures only as a transient
+ * TUI error event and never logs them. Checks the registration form, the
+ * engine binary, opencode's plugin cache, SDK resolution, and — when bun is
+ * available — a real module import of the installed plugin. */
+async function doctor() {
+  const problems = [];
+  const notes = [];
+  const ok = (msg) => console.log(`  ok   ${msg}`);
+  const warn = (msg) => {
+    notes.push(msg);
+    console.log(`  warn ${msg}`);
+  };
+  const fail = (msg) => {
+    problems.push(msg);
+    console.log(`  FAIL ${msg}`);
+  };
+
+  // 1. registration form
+  const { cfgPath } = opencodeConfigPath();
+  let data = {};
+  try {
+    data = readOpencodeConfig(cfgPath);
+  } catch (e) {
+    fail(`cannot parse ${cfgPath}: ${e.message}`);
+  }
+  const entries = (Array.isArray(data.plugin) ? data.plugin : []).filter(isArminPluginEntry);
+  if (entries.length === 0) {
+    fail(`plugin not registered in ${cfgPath} — run "armin install"`);
+  } else if (entries.length > 1) {
+    warn(`plugin registered ${entries.length}x in ${cfgPath} — stale entries should be removed`);
+  }
+
+  let pkgDir = null; // installed plugin package dir, when locatable
+  if (entries.length > 0) {
+    const spec = Array.isArray(entries[0]) ? entries[0][0] : entries[0];
+    if (spec.startsWith("file://")) {
+      const p = fileURLToPath(spec);
+      if (p.includes(`${path.sep}node_modules${path.sep}`)) {
+        fail(
+          `file:// registration points into node_modules (${p}) — this form cannot resolve ` +
+            `@opencode-ai/plugin and loads nothing; re-run "armin install"`,
+        );
+      } else {
+        warn(
+          `file:// registration (${p}) — dev/source install; only loads next to a checkout ` +
+            `with .opencode/node_modules. The npm tuple form is recommended.`,
+        );
+      }
+    } else {
+      ok(`plugin registered as npm spec "${spec}"`);
+      // Locate opencode's on-demand install: ~/.cache/opencode/packages/<spec>/node_modules/<name>
+      const name = spec.split("@")[0];
+      const cacheRoot = process.env.XDG_CACHE_HOME || path.join(os.homedir(), ".cache");
+      pkgDir = path.join(cacheRoot, "opencode", "packages", spec, "node_modules", name);
+      if (!fs.existsSync(pkgDir)) {
+        warn(
+          `opencode has not installed "${spec}" into its cache yet (${pkgDir}) — ` +
+            `fetched automatically on first opencode start`,
+        );
+      } else {
+        ok(`opencode cache present: ${pkgDir}`);
+        const sdkCandidates = [
+          path.join(pkgDir, "node_modules", "@opencode-ai", "plugin"),
+          path.join(pkgDir, "..", "..", "node_modules", "@opencode-ai", "plugin"),
+        ];
+        if (!sdkCandidates.some((p) => fs.existsSync(p))) {
+          fail(`@opencode-ai/plugin not resolvable inside the cache — the plugin will fail to load`);
+        } else {
+          ok(`@opencode-ai/plugin resolves inside the cache`);
+        }
+      }
+    }
+  }
+
+  // 2. engine binary (same lookup order as the plugin)
+  const engineCandidates = [
+    process.env.ARMIN_ENGINE_BIN,
+    process.env.ARMIN_BIN_DIR && path.join(process.env.ARMIN_BIN_DIR, "armin-engine"),
+    path.join(process.cwd(), "armin-core", "target", "release", "armin-engine"),
+    path.join(os.homedir(), ".local", "bin", "armin-engine"),
+  ].filter(Boolean);
+  const engine = engineCandidates.find((p) => {
+    try {
+      fs.accessSync(p, fs.constants.X_OK);
+      return true;
+    } catch {
+      return false;
+    }
+  });
+  if (engine) ok(`engine binary: ${engine}`);
+  else fail(`no executable armin-engine found (looked in: ${engineCandidates.join(", ")}) — run "armin install"`);
+
+  // 3. module import smoke test (opencode loads plugins under bun)
+  if (fs.existsSync(pkgDir ?? "")) {
+    const entry = path.join(pkgDir, "plugins", "armin.ts");
+    if (!fs.existsSync(entry)) {
+      fail(`plugin entry missing: ${entry} (package.json "main" must point at plugins/armin.ts)`);
+    } else {
+      let bun = null;
+      try {
+        execFileSync("bun", ["--version"], { stdio: "pipe" });
+        bun = "bun";
+      } catch {
+        // bun not on PATH
+      }
+      if (!bun) {
+        warn(`bun not found — skipping module import check (opencode loads plugins with its bundled bun)`);
+      } else {
+        try {
+          execFileSync(
+            bun,
+            [
+              "-e",
+              `const m = await import(process.env.ARMIN_PLUGIN_ENTRY); ` +
+                `if (typeof m.default !== "function") throw new Error("default export is not a plugin function");`,
+            ],
+            {
+              env: { ...process.env, ARMIN_PLUGIN_ENTRY: entry },
+              stdio: "pipe",
+            },
+          );
+          ok(`plugin module imports cleanly (${entry})`);
+        } catch (e) {
+          const detail = (e.stderr && e.stderr.toString().trim()) || e.message;
+          fail(`plugin module failed to import: ${detail}`);
+        }
+      }
+    }
+  }
+
+  if (problems.length > 0) {
+    console.log(`\n${problems.length} problem(s) found${notes.length ? ` (and ${notes.length} warning(s))` : ""}`);
+    process.exitCode = 1;
+  } else {
+    console.log(`\nall checks passed${notes.length ? ` (${notes.length} warning(s))` : ""}`);
+  }
 }
 
 async function install() {
@@ -266,7 +446,7 @@ async function install() {
   console.log(`
 ── done ────────────────────────────────────────────────────────
 ${registered
-    ? 'ARMIN is enabled in your opencode config ("armin": { "enabled": true }).\nRestart opencode to activate it; remove "enabled" to turn it off.'
+    ? `ARMIN is registered in your opencode config:\n  "plugin": [["${ARMIN_SPEC}", { "enabled": true, ... }]]\nRestart opencode to activate it; run "armin doctor" to verify, or remove\nthe entry to turn it off.`
     : "ARMIN is not enabled yet — follow the manual setup steps above."}
 
 Optional overrides (env wins over config):
@@ -287,8 +467,13 @@ Optional overrides (env wins over config):
 const arg = process.argv[2];
 if (arg === "--version" || arg === "-v") {
   console.log(`armin-installer ${PKG.version}`);
+} else if (arg === "doctor") {
+  doctor().catch((e) => {
+    console.error(e);
+    process.exitCode = 1;
+  });
 } else if (arg && arg !== "install") {
-  console.log("usage: armin [install|--version]");
+  console.log("usage: armin [install|doctor|--version]");
   process.exitCode = arg === "help" ? 0 : 1;
 } else {
   install().catch((e) => {

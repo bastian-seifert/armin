@@ -6,13 +6,12 @@
  * compact reasoning-state brief into the system prompt so decisions, open
  * questions, and contradictions survive context compaction.
  *
- * Opt-in: either set `ARMIN_ENABLED=1` (or `ARMIN_ENGINE_BIN`), or add an
- * `armin` section to any opencode config file (opencode.json / jsonc,
- * global or project):
+ * Opt-in: either set `ARMIN_ENABLED=1` (or `ARMIN_ENGINE_BIN`), or register
+ * the plugin with options (the form `armin install` writes — schema-safe,
+ * passed straight to this factory):
  *
  *   {
- *     "$schema": "https://opencode.ai/config.json",
- *     "armin": {
+ *     "plugin": [["armin-opencode@<version>", {
  *       "enabled": true,
  *       "provider": "anthropic",          // anthropic | openai (default: infer from keys)
  *       "apiKey": "sk-...",               // sent to the sidecar only; env key wins if both set
@@ -34,12 +33,18 @@
  *       "port": 4545,                     // optional fixed engine port (default:
  *                                         // OS auto-assign; auto-falls back when
  *                                         // the port is busy); env wins
- *     }
+ *     }]]
  *   }
  *
- * Precedence: engine defaults < config files (global < project) < env vars
- * (ARMIN_MODEL, ARMIN_BATCH_MS, ARMIN_BATCH_EVENTS, ARMIN_DB_DIR,
- * ARMIN_PORT, ARMIN_ENGINE_BIN, ARMIN_DEBUG) — env is the escape hatch.
+ * Legacy fallback: an `armin` section in any opencode config file
+ * (opencode.json / jsonc, global or project). Note opencode strips unknown
+ * top-level keys before plugins see the resolved config, so the section is
+ * re-read from the raw files — prefer the tuple options above.
+ *
+ * Precedence: engine defaults < config files (global < project) < plugin
+ * options < env vars (ARMIN_MODEL, ARMIN_BATCH_MS, ARMIN_BATCH_EVENTS,
+ * ARMIN_DB_DIR, ARMIN_PORT, ARMIN_ENGINE_BIN, ARMIN_DEBUG) — env is the
+ * escape hatch.
  *
  * Note: opencode's auth store (OAuth logins) is not exposed to plugins, so
  * extraction uses `apiKey`/environment API keys; the session *model* can
@@ -465,15 +470,23 @@ function extractFiles(args: unknown): string[] {
   return [...new Set(out)].slice(0, 8)
 }
 
-const ArminPlugin: Plugin = async (ctx) => {
-  // Config precedence: engine defaults < config files < env vars.
+const ArminPlugin: Plugin = async (ctx, options) => {
+  // Config precedence: engine defaults < config files < plugin options < env
+  // vars. The tuple options ("plugin": [["armin-opencode@x", {...}]]) are the
+  // schema-safe channel; the raw-file "armin" section is the legacy fallback
+  // (opencode strips unknown top-level keys from the resolved config, so the
+  // section is re-read from the files directly).
   const fileConfig = await loadArminConfig(ctx.worktree)
-  const armin = fileConfig.armin
+  const fileArmin = fileConfig.armin
+  const opts = (options ?? {}) as Record<string, unknown>
+  const armin: Record<string, unknown> = { ...fileArmin, ...opts }
 
   const enabledViaConfig = armin.enabled === true
   const enabledViaEnv = process.env.ARMIN_ENABLED === "1" || !!process.env.ARMIN_ENGINE_BIN
   if (!enabledViaConfig && !enabledViaEnv) {
-    log("disabled (set armin.enabled=true in config or ARMIN_ENABLED=1)")
+    console.log(
+      "[armin] disabled — enable with \"plugin\": [[\"armin-opencode\", { \"enabled\": true }]] or ARMIN_ENABLED=1",
+    )
     return {}
   }
 
@@ -556,7 +569,12 @@ const ArminPlugin: Plugin = async (ctx) => {
   const sidecar = new Sidecar(engineBin, dbFile, spawnEnv, pinnedPort)
   const started = await sidecar.start()
   if (!started) {
-    log("sidecar unavailable — plugin inert")
+    // Unconditional: opencode never logs plugin load failures, so a silent
+    // inert plugin is otherwise indistinguishable from a working one.
+    console.log(
+      `[armin] INERT — engine did not start (binary: ${engineBin}). ` +
+        `Run "armin doctor" to diagnose; ARMIN_DEBUG=1 for verbose logs.`,
+    )
     return { dispose: () => sidecar.dispose() }
   }
 
@@ -574,21 +592,18 @@ const ArminPlugin: Plugin = async (ctx) => {
       const mode = health?.extraction ?? "unknown"
       if (mode === "jev") {
         const via = health?.jev_provider ?? "typesafe"
-        log(`extraction: jev (System One via ${via}) — ready`)
+        console.log(`[armin] active — extraction: jev (System One via ${via})`)
       } else if (mode === "llm") {
-        log(
-          `extraction: llm (fallback) — jev is the default but no key is ` +
-            `configured. Set TYPESAFE_AI_API_KEY (typesafe.ai) or OPENROUTER_API_KEY ` +
-            `(openrouter.ai) in your environment, or \`"armin": { "typesafeKey": "..." }\`` +
-            ` / \`{ "jevProvider": "openrouter", "openrouterKey": "..." }\` in your ` +
-            `opencode config.`,
+        console.log(
+          `[armin] active — extraction: llm (fallback). jev is the default but no key is ` +
+            `configured: set TYPESAFE_AI_API_KEY (typesafe.ai) or OPENROUTER_API_KEY ` +
+            `(openrouter.ai), or "typesafeKey" / "jevProvider"+"openrouterKey" plugin options.`,
         )
       } else {
-        log(
-          `extraction: deterministic-only — no API keys found. Import and ` +
+        console.log(
+          `[armin] active — extraction: deterministic-only (no API keys). Import and ` +
             `unverified-edit warnings work; prose extraction does not. Set ` +
-            `TYPESAFE_AI_API_KEY or OPENROUTER_API_KEY (or ANTHROPIC/OPENAI_API_KEY) ` +
-            `to enable it.`,
+            `TYPESAFE_AI_API_KEY or OPENROUTER_API_KEY (or ANTHROPIC/OPENAI_API_KEY) to enable it.`,
         )
       }
     } catch {

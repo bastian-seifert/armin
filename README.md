@@ -75,13 +75,19 @@ scripts/install.sh               # or build from source (needs cargo)
 export TYPESAFE_AI_API_KEY=...        # typesafe.ai direct
 # export OPENROUTER_API_KEY=...       # or via OpenRouter (billed there;
 #                                     # jev routes to ~typesafe/jev-latest)
-#    …or put it in your global opencode config instead:
-#    "armin": { "typesafeKey": "..." }
-#    "armin": { "jevProvider": "openrouter", "openrouterKey": "..." }
-#    Pin the engine port (default: auto-assign): "armin": { "port": 4545 }
+#    …or put it in the plugin options in your global opencode config instead
+#    (the installer writes this form; options win over the legacy "armin"
+#    section, which opencode strips from its resolved config anyway):
+#    "plugin": [["armin-opencode@<version>", { "typesafeKey": "..." }]]
+#    "plugin": [["armin-opencode@<version>", { "jevProvider": "openrouter",
+#                                              "openrouterKey": "..." }]]
+#    Pin the engine port (default: auto-assign): { "port": 4545 } options
 
-# 3. Done — `armin install` writes "armin": { "enabled": true } into your
-#    global opencode config. Escape hatch (env wins over config):
+# 3. Done — `armin install` registers
+#    "plugin": [["armin-opencode@<version>", { "enabled": true, ... }]]
+#    in your global opencode config (opencode installs the package with its
+#    SDK into its own plugin cache on next start). Verify with `armin doctor`.
+#    Escape hatch (env wins over config):
 # export ARMIN_ENABLED=1              # enable without the config entry
 # optional knobs:
 # ARMIN_ENGINE_BIN=~/.local/bin/armin-engine
@@ -199,7 +205,7 @@ Events can be pushed via `POST /ingest` instead of `--stream`. Provider selectio
 | `GET /api/v1/metrics` | Pipeline counters |
 | `GET /api/v1/health` | Liveness + mode |
 
-Handshake: the engine prints `ARMIN_PORT=<port>` on stdout line 1; graceful SIGTERM with sled flush. The port is OS-assigned per session by default (`--port 0`); pin it with `"armin": { "port": 4545 }` in your opencode config or the `ARMIN_PORT` env var (installer prompt available) — a busy pinned port auto-falls back to a free port.
+Handshake: the engine prints `ARMIN_PORT=<port>` on stdout line 1; graceful SIGTERM with sled flush. The port is OS-assigned per session by default (`--port 0`); pin it with the `"port": 4545` plugin option (or the legacy `"armin": { "port": 4545 }` config section) or the `ARMIN_PORT` env var (installer prompt available) — a busy pinned port auto-falls back to a free port.
 
 ### MCP
 

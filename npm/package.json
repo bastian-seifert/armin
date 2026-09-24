@@ -11,13 +11,18 @@
   "bin": {
     "armin": "bin/armin.js"
   },
+  "main": "plugins/armin.ts",
   "files": [
     "bin/",
     "plugins/",
     "README.md"
   ],
+  "dependencies": {
+    "@opencode-ai/plugin": "^1.18.0"
+  },
   "engines": {
-    "node": ">=18"
+    "node": ">=18",
+    "opencode": ">=1.0.0"
   },
   "keywords": [
     "opencode",

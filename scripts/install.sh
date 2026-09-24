@@ -110,6 +110,11 @@ fi
 # 3. Register the plugin in the global opencode config so EVERY project
 #    gets ARMIN (the plugin itself is opt-in per environment via
 #    ARMIN_ENABLED=1).
+#
+#    Dev/source layout: the file:// form only works here because the plugin
+#    sits next to the repo's .opencode/node_modules (where opencode installs
+#    the plugin SDK). It must never be used for the npm-installed package —
+#    `armin install` writes the npm tuple form instead.
 PLUGIN_PATH="$REPO/.opencode/plugins/armin.ts"
 CFG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/opencode"
 CFG_JSON="$CFG_DIR/opencode.json"
@@ -134,12 +139,23 @@ except Exception:
     sys.exit(0)
 plugins = data.get("plugin", [])
 entry = "file://" + plugin
+armin = data.get("armin") or {}
 changed = False
-if entry not in plugins:
+# Replace any previous armin plugin entries (stale file:// forms from older
+# installers, or npm tuples written by `armin install`) with the dev file://
+# entry; duplicates would double-activate the plugin.
+def is_armin(p):
+    if isinstance(p, str):
+        return p.startswith("armin-opencode") or (p.startswith("file://") and p.endswith("/plugins/armin.ts"))
+    return isinstance(p, list) and len(p) == 2 and isinstance(p[0], str) and p[0].startswith("armin-opencode")
+if any(is_armin(p) and p != entry for p in plugins):
+    plugins = [entry] + [p for p in plugins if not is_armin(p)]
+    data["plugin"] = plugins
+    changed = True
+elif entry not in plugins:
     plugins.append(entry)
     data["plugin"] = plugins
     changed = True
-armin = data.get("armin") or {}
 ts_input = os.environ.get("TS_KEY_INPUT", "").strip()
 if ts_input and not os.environ.get("TYPESAFE_AI_API_KEY"):
     if armin.get("typesafeKey") != ts_input:
