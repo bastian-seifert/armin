@@ -36,6 +36,10 @@ if (pkg.main !== "plugins/armin.ts") problems.push(`"main" must be "plugins/armi
 if (pkg.exports?.["."] !== "./plugins/armin.ts" || pkg.exports?.["./server"] !== "./plugins/armin.ts")
   problems.push(`"exports" must map "." and "./server" to ./plugins/armin.ts (opencode v2 entrypoint), got ${JSON.stringify(pkg.exports)}`);
 if (!pkg.dependencies || !pkg.dependencies["@opencode-ai/plugin"]) problems.push("missing dependency @opencode-ai/plugin");
+// bin/armin.js edits the user's opencode.jsonc in place with this, so dropping
+// it would silently take the installer back to rewriting the file and eating
+// every comment in it.
+if (!pkg.dependencies || !pkg.dependencies["jsonc-parser"]) problems.push("missing dependency jsonc-parser (bin/armin.js patches the config with it)");
 if (problems.length) {
   console.error("npm/package.json metadata check failed:\n  " + problems.join("\n  "));
   process.exit(1);

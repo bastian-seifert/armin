@@ -21,6 +21,7 @@ const os = require("os");
 const path = require("path");
 const { fileURLToPath } = require("url");
 const zlib = require("zlib");
+const { applyEdits, modify, parse, parseTree } = require("jsonc-parser");
 
 const PKG_ROOT = path.join(__dirname, "..");
 const PKG = require(path.join(PKG_ROOT, "package.json"));
@@ -247,12 +248,158 @@ function opencodeConfigPath() {
   return { cfgDir, cfgPath: fs.existsSync(jsonc) ? jsonc : json };
 }
 
-/** Parse the global opencode config (JSON, with a line-comment cleanup for
- * JSONC). Throws on unparseable input. */
+/** Parse the global opencode config as JSONC. Returns both the value and the
+ * original text — the text is what lets registerPlugin() patch the file in
+ * place instead of re-serializing it. Throws on unparseable input. */
 function readOpencodeConfig(cfgPath) {
-  if (!fs.existsSync(cfgPath)) return {};
+  if (!fs.existsSync(cfgPath)) return { data: {}, text: null };
   const text = fs.readFileSync(cfgPath, "utf-8");
-  return JSON.parse(text.replace(/^\s*\/\/.*$/gm, ""));
+  const errors = [];
+  // parse() reports problems into `errors` rather than throwing, and an
+  // empty file yields undefined. allowTrailingComma keeps configs that use it.
+  const data = parse(text, errors, { allowTrailingComma: true });
+  if (errors.length) {
+    const first = errors[0];
+    throw new Error(`parse error at offset ${first.offset} (error ${first.error})`);
+  }
+  return { data: data ?? {}, text };
+}
+
+/** Formatting options inferred from the document, so an inserted value adopts
+ * the file's own indentation and line endings. jsonc-parser does NOT inherit
+ * these: omitting them yields a compact single-line insertion. */
+function detectFormatting(text) {
+  const indent = /\n([ \t]+)\S/.exec(text)?.[1] ?? "  ";
+  return {
+    insertSpaces: indent[0] !== "\t",
+    tabSize: indent[0] === "\t" ? 4 : Math.max(1, indent.replace(/\t/g, "  ").length),
+    eol: text.includes("\r\n") ? "\r\n" : "\n",
+  };
+}
+
+/** Edits turning array `before` into `after` for the top-level member `key`.
+ *
+ *  Elements are patched individually so comments attached to untouched
+ *  entries survive. jsonc-parser cannot express two deletions inside one
+ *  array — each swallows the following separator, so the edits overlap and
+ *  applyEdits throws — so that one case (a config carrying more than one
+ *  stale armin entry) replaces the member wholesale. Comments outside the
+ *  array still survive either way. */
+function arrayEdits(text, key, before, after, formattingOptions) {
+  const opts = { formattingOptions };
+  const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+  // Trim the common prefix and suffix; the span between them is all that moved.
+  let start = 0;
+  while (start < before.length && start < after.length && same(before[start], after[start])) {
+    start++;
+  }
+  let bi = before.length;
+  let ai = after.length;
+  while (bi > start && ai > start && same(before[bi - 1], after[ai - 1])) {
+    bi--;
+    ai--;
+  }
+
+  const removed = bi - start;
+  const added = ai - start;
+  if (removed === 0 && added === 0) return [];
+  if (removed > 1) return modify(text, [key], after, opts);
+
+  const edits = [];
+  const common = Math.min(removed, added);
+  for (let i = 0; i < common; i++) {
+    edits.push(...modify(text, [key, start + i], after[start + i], opts));
+  }
+  if (removed > added) {
+    edits.push(...modify(text, [key, start + added], undefined, opts));
+  } else {
+    // Pure append lands at index === length, which jsonc-parser handles.
+    for (let i = common; i < added; i++) {
+      edits.push(...modify(text, [key, start + i], after[start + i], opts));
+    }
+  }
+  return edits;
+}
+
+/** The AST node for the top-level member `key`, or null. findNodeAtLocation
+ *  returns the member's *value*, but the trivia that deletion swallows belongs
+ *  to the member, so we need the property node itself. */
+function memberNode(tree, key) {
+  if (!tree || !Array.isArray(tree.children)) return null;
+  return (
+    tree.children.find(
+      (c) =>
+        c.type === "property" &&
+        Array.isArray(c.children) &&
+        c.children[0] &&
+        c.children[0].value === key,
+    ) || null
+  );
+}
+
+/** True when a comment sits between the previous member (or the opening
+ *  brace) and the start of the member `key`. */
+function hasAttachedComment(text, tree, key) {
+  const node = memberNode(tree, key);
+  if (!node) return false;
+  const before = text.slice(0, node.offset);
+  const start = Math.max(before.lastIndexOf(","), before.lastIndexOf("{"));
+  return /\/\/|\/\*/.test(before.slice(start));
+}
+
+/** Rewrite only the members the installer touches, leaving every comment,
+ *  indent and line ending elsewhere in the file byte-identical. `members` is
+ *  a list of [key, value] pairs; a value of undefined deletes the member.
+ *
+ *  Returns null when the document has a shape we cannot patch safely, so the
+ *  caller can fall back to the old whole-file rewrite — the fix must never
+ *  produce a worse outcome than not fixing it. */
+function patchMembers(text, data, members) {
+  const formattingOptions = detectFormatting(text);
+  const tree = parseTree(text);
+  const edits = [];
+  try {
+    for (const [key, value] of members) {
+      const current = data[key];
+      let next = value;
+      // jsonc-parser removes a deleted member together with the trivia in
+      // front of it, so a comment directly above the member goes with it. For
+      // the plugin arrays that comment is usually about the config as a whole,
+      // so blank the member instead of deleting it — an empty array is inert
+      // and opencode reads it the same as an absent key. The legacy "armin"
+      // section is always deleted: its comment describes settings being
+      // migrated away.
+      if (next === undefined && key !== "armin" && hasAttachedComment(text, tree, key)) {
+        next = [];
+      }
+      if (Array.isArray(current) && Array.isArray(next)) {
+        edits.push(...arrayEdits(text, key, current, next, formattingOptions));
+      } else {
+        // Whole-member replace or create. modify() throws if the member is a
+        // non-array object and we try to address an element of it.
+        edits.push(...modify(text, [key], next, { formattingOptions }));
+      }
+    }
+    return applyEdits(text, edits);
+  } catch {
+    return null;
+  }
+}
+
+/** Keep the user's original config recoverable. The installer rewrites a
+ *  hand-maintained file, so an unwanted edit is otherwise unrecoverable.
+ *  Written once: a second install must not overwrite the pristine copy with
+ *  an already-modified one. */
+function backupConfig(cfgPath) {
+  if (!fs.existsSync(cfgPath)) return;
+  const bak = `${cfgPath}.armin-bak`;
+  if (fs.existsSync(bak)) return;
+  try {
+    fs.copyFileSync(cfgPath, bak);
+    console.log(`original config backed up to ${bak}`);
+  } catch (e) {
+    console.log(`could not back up ${cfgPath}: ${e.message}`);
+  }
 }
 
 /** Register the plugin as an npm entry, in the schema the installed opencode
@@ -275,20 +422,35 @@ function registerPlugin() {
   const key = v2 ? "plugins" : "plugin";
   const otherKey = v2 ? "plugin" : "plugins";
   const { cfgDir, cfgPath } = opencodeConfigPath();
-  let data;
+  let data, text;
   try {
-    data = readOpencodeConfig(cfgPath);
-  } catch {
+    ({ data, text } = readOpencodeConfig(cfgPath));
+  } catch (e) {
     const form = v2
       ? `"plugins": [{ "package": "${ARMIN_SPEC}", "options": { "enabled": true } }]`
       : `"plugin": [["${ARMIN_SPEC}", { "enabled": true }]]`;
-    console.log(`\nCould not parse ${cfgPath} — set up manually:\n  add ${form} to your opencode config\n`);
+    console.log(`\nCould not parse ${cfgPath} (${e.message}) — set up manually:\n  add ${form} to your opencode config\n`);
     return false;
   }
 
-  // Options: legacy "armin" keys migrate in; prompted values win.
+  const plugins = Array.isArray(data[key]) ? data[key] : [];
+
+  // Options carry user settings forward from both places they can live: the
+  // legacy "armin" section, and the options of the entry we are replacing.
+  // Without the second source a re-run silently resets a port or key the user
+  // set on the first one — the legacy section is deleted after migrating, so
+  // there would be nothing left to restore from.
+  const replaced = plugins.find(isArminPluginEntry);
+  const replacedOptions = Array.isArray(replaced)
+    ? replaced[1]
+    : replaced && typeof replaced === "object"
+      ? replaced.options
+      : undefined;
+  // Options: legacy "armin" keys and the previous entry's options migrate in,
+  // the entry's winning as the more specific source; prompted values win.
   const options = {
     ...(data.armin && typeof data.armin === "object" ? data.armin : {}),
+    ...(replacedOptions && typeof replacedOptions === "object" ? replacedOptions : {}),
     enabled: true,
   };
   if (pendingTypesafeKey && !process.env.TYPESAFE_AI_API_KEY) {
@@ -301,7 +463,6 @@ function registerPlugin() {
   if (pendingPort) options.port = pendingPort;
 
   const entry = v2 ? { package: ARMIN_SPEC, options } : [ARMIN_SPEC, options];
-  const plugins = Array.isArray(data[key]) ? data[key] : [];
   const next = [];
   let placed = false;
   for (const item of plugins) {
@@ -327,12 +488,30 @@ function registerPlugin() {
     JSON.stringify(otherAfter) !== JSON.stringify(otherBefore) ||
     data.armin !== undefined;
   if (changed) {
-    data[key] = next;
-    if (otherAfter.length > 0) data[otherKey] = otherAfter;
-    else delete data[otherKey];
-    delete data.armin; // migrated into the entry options above
+    // Only these members ever move, so patch them in place and leave the rest
+    // of the document — comments, indentation, line endings — untouched.
+    const members = [[key, next]];
+    if (Array.isArray(data[otherKey])) {
+      members.push([otherKey, otherAfter.length ? otherAfter : undefined]);
+    }
+    if (data.armin !== undefined) members.push(["armin", undefined]);
+
+    let out = text === null ? null : patchMembers(text, data, members);
+    if (out === null) {
+      // New file, or a shape we will not patch blind. Whole-file rewrite, as
+      // before — correct, but comments and formatting are not preserved.
+      if (text !== null) {
+        console.log(`could not patch ${cfgPath} in place — rewriting it, comments and formatting are not preserved`);
+      }
+      data[key] = next;
+      if (otherAfter.length > 0) data[otherKey] = otherAfter;
+      else delete data[otherKey];
+      delete data.armin; // migrated into the entry options above
+      out = JSON.stringify(data, null, 2);
+    }
     fs.mkdirSync(cfgDir, { recursive: true });
-    fs.writeFileSync(cfgPath, JSON.stringify(data, null, 2));
+    backupConfig(cfgPath);
+    fs.writeFileSync(cfgPath, out);
   }
   console.log(
     v2
@@ -364,7 +543,7 @@ async function doctor() {
   const { cfgPath } = opencodeConfigPath();
   let data = {};
   try {
-    data = readOpencodeConfig(cfgPath);
+    ({ data } = readOpencodeConfig(cfgPath));
   } catch (e) {
     fail(`cannot parse ${cfgPath}: ${e.message}`);
   }

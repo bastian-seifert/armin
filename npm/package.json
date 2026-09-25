@@ -22,7 +22,8 @@
     "README.md"
   ],
   "dependencies": {
-    "@opencode-ai/plugin": "^1.18.0"
+    "@opencode-ai/plugin": "^1.18.0",
+    "jsonc-parser": "^3.3.1"
   },
   "engines": {
     "node": ">=18",

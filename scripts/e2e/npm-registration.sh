@@ -192,6 +192,181 @@ ARMIN_BIN_DIR="$V2_HOME/bin" \
 grep -q "v2 config form" "$WORK/doctor-v2.log" || fail "doctor did not recognize the v2 form: $(cat "$WORK/doctor-v2.log")"
 pass "armin doctor accepts the v2 registration form"
 
+# ── 3c. JSONC is patched, not reformatted ───────────────────────────────────
+# The installer's first job is not to mangle someone's config. It used to
+# JSON.parse the file, mutate, and JSON.stringify it back — which silently
+# deleted every comment, the user's indentation and their line endings on any
+# run that changed anything, and could not parse a config using trailing or
+# block comments at all. Step 3 only ever used a bare opencode.json, so none
+# of that showed up. This step runs install against a commented .jsonc.
+echo "── JSONC comment and formatting preservation"
+C_HOME="$WORK/jsonc"
+mkdir -p "$C_HOME/home" "$C_HOME/bin" "$C_HOME/xdg/config/opencode"
+cp "$WORK/bin/armin-engine" "$C_HOME/bin/armin-engine"
+C_CFG="$C_HOME/xdg/config/opencode/opencode.jsonc"
+cat >"$C_CFG" <<'EOF'
+{
+    // hand maintained — do not reformat
+    "$schema": "https://opencode.ai/config.json",   // trailing comment
+
+    /* plugins we rely on */
+    "plugin": [
+        // keep this one
+        "other-plugin",
+        ["armin-opencode@0.0.0-e2e.stale", { "enabled": true }] // replace me
+    ],
+
+    "model": "anthropic/claude-opus-4",
+    "armin": {           // legacy section
+        "port": 4096
+    }
+}
+EOF
+cp "$C_CFG" "$WORK/jsonc-original.jsonc"
+
+armin_install_jsonc() {
+    XDG_CONFIG_HOME="$C_HOME/xdg/config" \
+    XDG_DATA_HOME="$C_HOME/xdg/data" \
+    XDG_CACHE_HOME="$C_HOME/xdg/cache" \
+    HOME="$C_HOME/home" \
+    ARMIN_BIN_DIR="$C_HOME/bin" \
+    ARMIN_OPENCODE_MAJOR=1 \
+        "$PKG_ROOT/bin/armin.js" install >"$WORK/install-jsonc.log" 2>&1
+}
+armin_install_jsonc || fail "armin install (jsonc) failed (see $WORK/install-jsonc.log)"
+
+node - "$C_CFG" "$WORK/jsonc-original.jsonc" "$E2E_VERSION" "$PREFIX/node_modules/jsonc-parser" <<'EOF' || fail "JSONC preservation check failed"
+const fs = require("fs");
+const [cfgPath, origPath, version, jsoncPath] = process.argv.slice(2);
+const { parse } = require(jsoncPath);
+const after = fs.readFileSync(cfgPath, "utf-8");
+const before = fs.readFileSync(origPath, "utf-8");
+const bad = [];
+const want = (cond, msg) => { if (!cond) bad.push(msg); };
+
+// 1. It still parses as JSONC, and the registration is correct.
+const cfg = parse(after);
+const hit = (cfg.plugin || []).find((p) => Array.isArray(p) && p[0] === "armin-opencode@" + version);
+want(!!hit, "no pinned tuple for this version in \"plugin\": " + JSON.stringify(cfg.plugin));
+want(hit && hit[1]?.enabled === true, "tuple options missing enabled:true");
+// The legacy armin section carries the port; it must migrate, not vanish.
+want(hit && hit[1]?.port === 4096, "port from the legacy armin section was dropped");
+
+// 2. Every comment survived, verbatim.
+for (const c of [
+    "// hand maintained — do not reformat",
+    "// trailing comment",
+    "/* plugins we rely on */",
+    "// keep this one",
+    "// replace me",
+]) want(after.includes(c), `comment lost: ${JSON.stringify(c)}`);
+
+// 3. Nothing was duplicated: exactly one armin entry, the other plugin kept.
+want((cfg.plugin || []).filter((p) => JSON.stringify(p).includes("armin-opencode")).length === 1,
+    "armin entry was duplicated instead of replaced in place");
+want((cfg.plugin || []).includes("other-plugin"), "unrelated plugin entry was dropped");
+want(!("armin" in cfg), "legacy armin section was not migrated away");
+
+// 4. Formatting outside the replaced value is byte-identical.
+want(after.includes('\n    "model": "anthropic/claude-opus-4"'),
+    "4-space indentation was not preserved");
+want(before.includes('\n    "model": "anthropic/claude-opus-4"'),
+    "test fixture does not actually use 4-space indentation");
+
+if (bad.length) { for (const b of bad) console.error("  " + b); process.exit(1); }
+EOF
+pass "comments, indentation and other entries survived armin install"
+
+[[ -f "$C_CFG.armin-bak" ]] || fail "no backup written before the config was modified"
+cmp -s "$C_CFG.armin-bak" "$WORK/jsonc-original.jsonc" \
+    || fail "the backup does not match the original config"
+pass "original config backed up before the first write"
+
+cp "$C_CFG" "$WORK/jsonc-pass1.jsonc"
+armin_install_jsonc || fail "second armin install failed (see $WORK/install-jsonc.log)"
+cmp -s "$WORK/jsonc-pass1.jsonc" "$C_CFG" \
+    || fail "a second install modified the config — re-running must be a no-op"
+pass "re-running install is a byte-for-byte no-op"
+
+XDG_CONFIG_HOME="$C_HOME/xdg/config" \
+XDG_DATA_HOME="$C_HOME/xdg/data" \
+XDG_CACHE_HOME="$C_HOME/xdg/cache" \
+HOME="$C_HOME/home" \
+ARMIN_BIN_DIR="$C_HOME/bin" \
+    "$PKG_ROOT/bin/armin.js" doctor >"$WORK/doctor-jsonc.log" 2>&1 \
+    || fail "armin doctor rejected a config with comments (see $WORK/doctor-jsonc.log)"
+pass "armin doctor reads a commented config"
+
+# ── 3d. The source installer patches configs too ─────────────────────────────
+# scripts/install.sh carries its own JSONC editing in Python, with no
+# jsonc-parser equivalent available, so it gets its own regression test. Same
+# contract as 3c: comments and formatting survive, and re-running is a no-op.
+echo "── scripts/install.sh JSONC preservation"
+S_HOME="$WORK/srcinstall"
+mkdir -p "$S_HOME/home" "$S_HOME/bin" "$S_HOME/xdg/opencode"
+cp "$WORK/bin/armin-engine" "$S_HOME/bin/armin-engine"
+S_CFG="$S_HOME/xdg/opencode/opencode.jsonc"
+cat >"$S_CFG" <<'EOF'
+{
+    // hand maintained — do not reformat
+    "$schema": "https://opencode.ai/config.json",   // trailing comment
+
+    "plugin": [
+        // keep this one
+        "other-plugin"
+    ],
+
+    "model": "anthropic/claude-opus-4"
+}
+EOF
+cp "$S_CFG" "$WORK/src-original.jsonc"
+PLUGIN_FILE="$REPO/.opencode/plugins/armin.ts"
+
+src_install() {
+    XDG_CONFIG_HOME="$S_HOME/xdg" \
+    ARMIN_BIN_DIR="$S_HOME/bin" \
+    ARMIN_OPENCODE_MAJOR=1 \
+        bash "$REPO/scripts/install.sh" --skip-build >"$WORK/src-install.log" 2>&1 </dev/null
+}
+src_install || fail "scripts/install.sh failed (see $WORK/src-install.log)"
+
+node - "$S_CFG" "$PLUGIN_FILE" "$PREFIX/node_modules/jsonc-parser" <<'EOF' || fail "install.sh JSONC preservation check failed"
+const fs = require("fs");
+const [cfgPath, plugin, jsoncPath] = process.argv.slice(2);
+const { parse } = require(jsoncPath);
+const after = fs.readFileSync(cfgPath, "utf-8");
+const bad = [];
+const want = (cond, msg) => { if (!cond) bad.push(msg); };
+
+// The config must still be readable as JSONC with the entry in place.
+let cfg;
+try { cfg = parse(after); } catch (e) { console.error("  result is not valid JSONC: " + e.message); process.exit(1); }
+
+want((cfg.plugin || []).includes("other-plugin"), "unrelated plugin entry was dropped");
+want((cfg.plugin || []).includes("file://" + plugin), "dev file:// entry was not registered");
+for (const c of [
+    "// hand maintained — do not reformat",
+    "// trailing comment",
+    "// keep this one",
+]) want(after.includes(c), `comment lost: ${JSON.stringify(c)}`);
+want(after.includes('\n    "model": "anthropic/claude-opus-4"'), "4-space indentation was not preserved");
+want("armin" in cfg, "the armin options section was not created");
+
+if (bad.length) { for (const b of bad) console.error("  " + b); process.exit(1); }
+EOF
+pass "scripts/install.sh preserved comments, indentation and other entries"
+
+[[ -f "$S_CFG.armin-bak" ]] || fail "install.sh wrote no backup before modifying the config"
+cmp -s "$S_CFG.armin-bak" "$WORK/src-original.jsonc" \
+    || fail "the install.sh backup does not match the original config"
+pass "scripts/install.sh backed up the original config"
+
+cp "$S_CFG" "$WORK/src-pass1.jsonc"
+src_install || fail "second scripts/install.sh run failed (see $WORK/src-install.log)"
+cmp -s "$WORK/src-pass1.jsonc" "$S_CFG" \
+    || fail "a second install.sh run modified the config — re-running must be a no-op"
+pass "re-running scripts/install.sh is a byte-for-byte no-op"
+
 # The dual entrypoint itself: v2 reads id + setup() from the default export.
 # No v2 binary is published, so drive setup() with a stub context and assert
 # the plugin registers its hooks and tools.

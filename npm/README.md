@@ -30,6 +30,12 @@ the plugin). The same package entrypoint implements both: v2 reads `id` +
 `setup()` from the default export, v1 reads `server()` from it.
 `ARMIN_ENABLED=1` remains as a per-environment escape hatch.
 
+Your config is yours: `install` patches only the `plugin`/`plugins` entries
+rather than re-serializing the file, so comments, indentation and line endings
+elsewhere in `opencode.json`/`.jsonc` are left exactly as they were. The first
+time it edits a config it leaves the original next to it as
+`opencode.json.armin-bak`.
+
 Verify a install (registration form, engine binary, opencode's plugin cache,
 SDK resolution, module import):
 
