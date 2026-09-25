@@ -11,7 +11,7 @@
       "name": "armin",
       "displayName": "ARMIN",
       "description": "Queryable decision memory for Claude Code. Passively captures tool calls and prose into a reasoning graph, pushes a compact brief into context every turn, and rehydrates it after compaction.",
-      "version": "0.1.6",
+      "version": "0.1.7",
       "license": "Apache-2.0",
       "category": "agent-memory",
       "tags": [
@@ -23,8 +23,8 @@
       ],
       "source": {
         "source": "archive",
-        "url": "https://github.com/bastian-seifert/armin/releases/download/v0.1.6/armin-claude-plugin-v0.1.6.zip",
-        "sha256": "01e0755974b890ebec483bef2e1ff23c946f1b30ee5d3552d45dac5299d8f32d"
+        "url": "https://github.com/bastian-seifert/armin/releases/download/v0.1.7/armin-claude-plugin-v0.1.7.zip",
+        "sha256": "5e230270dd8c94f20fa9144f7df61ae3d84459d44f62ddd6acae03c57aa03e27"
       }
     }
   ]
