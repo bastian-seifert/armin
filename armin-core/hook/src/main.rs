@@ -254,7 +254,7 @@ fn handle_post_compact(input: Option<&HookInput>) -> anyhow::Result<()> {
 
 fn debug_enabled() -> bool {
     std::env::var("ARMIN_DEBUG").as_deref() == Ok("1")
-        || std::env::var("CLAUDE_PLUGIN_OPTION_DEBUG").as_deref() == Ok("1")
+        || daemon::option_enabled("CLAUDE_PLUGIN_OPTION_DEBUG")
 }
 
 fn state_dir(cwd: &Path) -> PathBuf {

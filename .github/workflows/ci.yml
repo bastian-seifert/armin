@@ -55,3 +55,29 @@ jobs:
           cd .opencode
           bunx tsc --noEmit --strict --types bun --moduleResolution bundler \
             --module es2022 --target es2022 --skipLibCheck plugins/armin.ts
+
+  claude-plugin:
+    name: Claude plugin (catalog consistency)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: manifests parse, names agree, hooks map to armin-hook subcommands
+        run: |
+          node -e "
+            const fs = require('fs');
+            const read = (p) => JSON.parse(fs.readFileSync(p, 'utf-8'));
+            const mk = read('.claude-plugin/marketplace.json');
+            const pl = read('claude-plugin/.claude-plugin/plugin.json');
+            const hk = read('claude-plugin/hooks/hooks.json');
+            const entry = mk.plugins.find((p) => p.name === pl.name);
+            if (!entry) throw new Error('marketplace has no entry named ' + pl.name);
+            const subs = ['ensure', 'session-start', 'user-prompt-submit', 'post-tool-use', 'post-compact', 'session-end'];
+            for (const [event, groups] of Object.entries(hk.hooks)) {
+              for (const g of groups) for (const h of g.hooks) {
+                if (h.command !== '\${CLAUDE_PLUGIN_ROOT}/bin/armin-hook') throw new Error(event + ': unexpected command ' + h.command);
+                if (!subs.includes(h.args?.[0])) throw new Error(event + ': unknown subcommand ' + h.args?.[0]);
+              }
+            }
+            console.log('ok:', Object.keys(hk.hooks).join(', '));
+          "
+          test -x claude-plugin/bin/armin-hook

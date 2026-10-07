@@ -2,7 +2,7 @@
 
 Status: **v1 plugin shipped** (`claude-plugin/`), published via the repo's own marketplace; community-marketplace submission pending.
 
-- Install: `/plugin marketplace add bastian-seifert/armin` → `/plugin install armin@armin`
+- Install: `/plugin marketplace add bastian-seifert/armin` → `/plugin install armin@armin` (Claude Code ≥ v2.1.224, needed for the `archive` source)
 - User-facing docs: [`claude-plugin/README.md`](../claude-plugin/README.md)
 - Reference implementation (OpenCode, in-process): [`.opencode/plugins/armin.ts`](../.opencode/plugins/armin.ts)
 
@@ -79,7 +79,7 @@ Claude Code ──hooks──► armin-hook (short-lived process, bundled in bin
 | Step | Status |
 |---|---|
 | Own marketplace in repo (`.claude-plugin/marketplace.json`, archive source pinned to release assets) | done — active after the first `v*` tag |
-| Release CI builds hook+engine per platform, zips the plugin, uploads, pins catalog to `main` | done (`.github/workflows/release.yml`) |
+| Release CI builds hook+engine per platform, bundles both into `bin/`, zips the plugin, uploads, pins catalog to `main` | done (`.github/workflows/release.yml`; releases ≤ v0.1.7 shipped without the engine) |
 | `claude plugin validate ./claude-plugin --strict` gate | run locally before release (no Claude CLI in CI yet) |
 | Community marketplace (`anthropics/claude-plugins-community`) | pending submission — guide: [`docs/community-submission.md`](community-submission.md) |
 | Official marketplace (`claude-plugins-official`) | curated by Anthropic, no application process |
