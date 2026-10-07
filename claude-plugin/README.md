@@ -32,6 +32,8 @@ From any Claude Code session:
 /plugin install armin@armin
 ```
 
+Requires Claude Code v2.1.224 or later (archive-sourced marketplace plugins).
+
 The plugin bundles the engine binary for Linux x64, macOS x64, and macOS arm64 — nothing else to install. On the first prompt you should see a `reasoning-state` reminder appear in context once memory exists.
 
 ## Extraction backends

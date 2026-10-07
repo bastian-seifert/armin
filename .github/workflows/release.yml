@@ -50,15 +50,18 @@ jobs:
           cp README.md LICENSE "$dir/"
           tar czf "$dir.tar.gz" "$dir"
           shasum -a 256 "$dir.tar.gz" > "$dir.tar.gz.sha256"
-      - name: stage hook binary for the claude plugin
+      - name: stage hook + engine binaries for the claude plugin
         run: |
           mkdir -p claude-plugin-bin
           cp "armin-core/target/${{ matrix.target }}/release/armin-hook" \
              "claude-plugin-bin/armin-hook-${{ matrix.platform }}"
+          # The hook looks for armin-engine-<platform> next to itself.
+          cp "armin-core/target/${{ matrix.target }}/release/armin-engine" \
+             "claude-plugin-bin/armin-engine-${{ matrix.platform }}"
       - uses: actions/upload-artifact@v4
         with:
-          name: armin-hook-${{ matrix.platform }}
-          path: claude-plugin-bin/armin-hook-${{ matrix.platform }}
+          name: armin-plugin-bin-${{ matrix.platform }}
+          path: claude-plugin-bin/
       - name: upload engine to release
         uses: softprops/action-gh-release@v2
         with:
@@ -74,21 +77,26 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
-          pattern: armin-hook-*
+          pattern: armin-plugin-bin-*
           merge-multiple: true
           path: claude-plugin/bin
       - name: make binaries executable
         working-directory: claude-plugin
         run: |
-          chmod +x bin/armin-hook bin/armin-hook-*
+          chmod +x bin/armin-hook bin/armin-hook-* bin/armin-engine-*
           ls -la bin/
+          for p in linux-x64 macos-x64 macos-arm64; do
+            for b in armin-hook armin-engine; do
+              test -x "bin/$b-$p" || { echo "missing bin/$b-$p"; exit 1; }
+            done
+          done
       - name: set plugin version from tag
         run: |
           node -e "
             const fs = require('fs');
             const p = 'claude-plugin/.claude-plugin/plugin.json';
             const m = JSON.parse(fs.readFileSync(p, 'utf-8'));
-            m.version = process.env.VERSION;
+            m.version = process.env.VERSION.replace(/^v/, '');
             fs.writeFileSync(p, JSON.stringify(m, null, 2) + '\n');
           "
         env:

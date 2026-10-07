@@ -222,10 +222,21 @@ fn sidecar_env_patch() -> Vec<(String, String)> {
     push("TYPESAFE_AI_API_KEY", "CLAUDE_PLUGIN_OPTION_TYPESAFEKEY");
     push("OPENROUTER_API_KEY", "CLAUDE_PLUGIN_OPTION_OPENROUTERKEY");
     push("ARMIN_MODEL", "CLAUDE_PLUGIN_OPTION_MODEL");
-    if std::env::var("CLAUDE_PLUGIN_OPTION_DEBUG").as_deref() == Ok("1") {
+    if option_enabled("CLAUDE_PLUGIN_OPTION_DEBUG") {
         patch.push(("ARMIN_DEBUG".to_string(), "1".to_string()));
     }
     patch
+}
+
+/// True when env var `name` holds a truthy flag. Boolean plugin options may
+/// arrive as "true" rather than "1", so accept both.
+pub fn option_enabled(name: &str) -> bool {
+    std::env::var(name).is_ok_and(|v| flag_is_true(&v))
+}
+
+fn flag_is_true(value: &str) -> bool {
+    let v = value.trim();
+    v == "1" || v.eq_ignore_ascii_case("true")
 }
 
 // ── Daemon handle + ensure ───────────────────────────────────────────────────
@@ -491,6 +502,16 @@ pub fn logln(debug: bool, msg: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn flag_accepts_one_and_true() {
+        for v in ["1", "true", "TRUE", " True "] {
+            assert!(flag_is_true(v), "{v:?}");
+        }
+        for v in ["", "0", "false", "yes"] {
+            assert!(!flag_is_true(v), "{v:?}");
+        }
+    }
 
     #[test]
     fn project_key_prefers_git_origin() {
