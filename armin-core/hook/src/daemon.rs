@@ -532,12 +532,14 @@ mod tests {
 
     #[test]
     fn state_dir_is_stable_and_distinct() {
+        // Compare only the per-project slug: the root comes from
+        // XDG_STATE_HOME, which the integration tests in main.rs mutate
+        // concurrently.
+        let slug = |p: &Path| state_dir(p).file_name().unwrap().to_owned();
         let dir = tempfile::tempdir().unwrap();
-        let a = state_dir(dir.path());
-        let b = state_dir(dir.path());
-        assert_eq!(a, b);
+        assert_eq!(slug(dir.path()), slug(dir.path()));
         let other = tempfile::tempdir().unwrap();
-        assert_ne!(a, state_dir(other.path()));
+        assert_ne!(slug(dir.path()), slug(other.path()));
     }
 
     #[test]
