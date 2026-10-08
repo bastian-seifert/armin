@@ -16,16 +16,25 @@ pub async fn ws_handler(
 async fn handle_socket(mut socket: WebSocket, state: AppState) {
     let mut rx = state.ws_tx.subscribe();
     loop {
-        match rx.recv().await {
-            Ok(msg) => {
-                if socket.send(Message::Text(msg.into())).await.is_err() {
-                    break;
+        tokio::select! {
+            msg = rx.recv() => match msg {
+                Ok(msg) => {
+                    if socket.send(Message::Text(msg.into())).await.is_err() {
+                        break;
+                    }
                 }
-            }
-            Err(RecvError::Lagged(n)) => {
-                warn!("WS client lagged by {n} messages");
-            }
-            Err(RecvError::Closed) => break,
+                Err(RecvError::Lagged(n)) => {
+                    warn!("WS client lagged by {n} messages");
+                }
+                Err(RecvError::Closed) => break,
+            },
+            // Also watch the client side: without this a disconnected client
+            // is only noticed on the next broadcast, so when the stream is
+            // idle its task and broadcast receiver live forever.
+            incoming = socket.recv() => match incoming {
+                Some(Ok(Message::Close(_))) | Some(Err(_)) | None => break,
+                Some(Ok(_)) => {}
+            },
         }
     }
 }

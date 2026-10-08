@@ -1,6 +1,6 @@
 //! Background extraction worker.
 //!
-//! Prose events arrive over an unbounded channel and are batched: either
+//! Prose events arrive over a bounded channel and are batched: either
 //! `batch_events` events accumulate or `batch_ms` elapses, whichever comes
 //! first — then ONE extraction pass covers the whole batch (generative LLM
 //! in `Llm` mode, TypeSafe System One judgments in `Jev` mode). The calling
@@ -12,13 +12,13 @@ use std::time::{Duration, Instant};
 use armin_extraction::ExtractionClient;
 use armin_graph::ExtractionResult;
 use armin_ingest::EventRecord;
-use tokio::sync::mpsc::UnboundedReceiver;
+use tokio::sync::mpsc::Receiver;
 use tracing::{debug, info, warn};
 
 use crate::state::EngineState;
 
 /// Run the worker until the channel closes (i.e. the engine shuts down).
-pub async fn run(state: EngineState, mut rx: UnboundedReceiver<EventRecord>) {
+pub async fn run(state: EngineState, mut rx: Receiver<EventRecord>) {
     info!(
         "Extraction worker started: mode={} batch_ms={} batch_events={} jev={}/{} llm_extractor={}",
         if state.jev.is_some() { "jev" } else { "llm" },
@@ -72,7 +72,8 @@ async fn process_batch(state: &EngineState, batch: &[EventRecord]) {
         process_batch_llm(state, batch).await;
     } else {
         warn!(
-            "No extractor available (jev needs TYPESAFE_AI_API_KEY, llm needs              ANTHROPIC/OPENAI_API_KEY) — dropping batch of {}",
+            "No extractor available (jev needs TYPESAFE_AI_API_KEY, llm needs \
+             ANTHROPIC/OPENAI_API_KEY) — dropping batch of {}",
             batch.len()
         );
     }

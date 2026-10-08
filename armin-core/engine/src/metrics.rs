@@ -10,6 +10,8 @@ pub struct Metrics {
     pub events_ingested: AtomicU64,
     pub tool_events: AtomicU64,
     pub events_queued_for_llm: AtomicU64,
+    /// Prose events dropped because the extraction queue was full.
+    pub events_dropped: AtomicU64,
     pub llm_batches: AtomicU64,
     pub llm_events_extracted: AtomicU64,
     pub llm_extraction_errors: AtomicU64,
@@ -41,6 +43,7 @@ impl Metrics {
             (events_ingested, "events_ingested"),
             (tool_events, "tool_events"),
             (events_queued_for_llm, "events_queued_for_llm"),
+            (events_dropped, "events_dropped"),
             (llm_batches, "llm_batches"),
             (llm_events_extracted, "llm_events_extracted"),
             (llm_extraction_errors, "llm_extraction_errors"),

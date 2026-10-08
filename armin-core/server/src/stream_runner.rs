@@ -36,7 +36,10 @@ async fn run_with_source(state: AppState, source: &mut dyn EventSource, speed: u
             let log = state.event_log.read().await;
             log.iter().cloned().collect()
         };
-        let snapshot = state.graph.snapshot().await;
+        // Extraction context only needs the recent slice (the prompt keeps
+        // the newest 50 nodes / 100 edges): cloning the whole graph for every
+        // event is O(N) per event and fed the prompt the OLDEST nodes.
+        let snapshot = state.graph.recent_snapshot(50, 100).await;
         let session_idx = state.current_session_idx.load(Ordering::SeqCst);
 
         let mut ctx = PipelineContext {

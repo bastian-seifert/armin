@@ -62,7 +62,7 @@ function graphReducer(state: GraphState, action: GraphAction): GraphState {
     case 'ADD_TRANSITION':
       return {
         ...state,
-        feedEntries: [...state.feedEntries, action.payload],
+        feedEntries: [...state.feedEntries, action.payload].slice(-500),
       }
 
     case 'ADD_EVENT': {
@@ -80,9 +80,14 @@ function graphReducer(state: GraphState, action: GraphAction): GraphState {
       const edges = new Map(state.edges)
       new_edges.forEach(e => edges.set(e.id, e))
 
-      const highlightedUtteranceIds = hasNewNodes
+      let highlightedUtteranceIds = hasNewNodes
         ? new Set([...state.highlightedUtteranceIds, data.id])
         : state.highlightedUtteranceIds
+      // Keep the set bounded like the feed: drop IDs that scrolled out.
+      if (highlightedUtteranceIds.size > feedEntries.length) {
+        const live = new Set(feedEntries.map(e => ('id' in e ? e.id : undefined)))
+        highlightedUtteranceIds = new Set([...highlightedUtteranceIds].filter(id => live.has(id)))
+      }
 
       return {
         ...state,
@@ -143,7 +148,12 @@ export function GraphProvider({ children }: GraphProviderProps) {
     ws.onopen = () => dispatch({ type: 'WS_CONNECTED' })
 
     ws.onmessage = (event: MessageEvent<string>) => {
-      const msg = JSON.parse(event.data) as WsMessage
+      let msg: WsMessage
+      try {
+        msg = JSON.parse(event.data) as WsMessage
+      } catch {
+        return
+      }
 
       if (msg.type === 'session_boundary') {
         dispatch({
@@ -179,7 +189,18 @@ export function GraphProvider({ children }: GraphProviderProps) {
     return () => {
       mountedRef.current = false
       if (reconnectTimer.current) clearTimeout(reconnectTimer.current)
-      wsRef.current?.close()
+      const ws = wsRef.current
+      wsRef.current = null
+      if (ws) {
+        // Detach first: onclose fires asynchronously, and under StrictMode's
+        // unmount/remount it would see mountedRef === true again and open a
+        // second, never-closed socket.
+        ws.onopen = null
+        ws.onmessage = null
+        ws.onerror = null
+        ws.onclose = null
+        ws.close()
+      }
     }
   }, [connect])
 

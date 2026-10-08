@@ -592,6 +592,23 @@ Use ONLY the exact node IDs given above. If nothing links, respond with {"new_no
         }
 
         // ── Gate 3: Edge validation ─────────────────────────────────────────────
+        // Labels and event IDs of every known node — pre-existing and new
+        // (an edge between two nodes of this batch must be checked too).
+        let new_meta: Vec<(String, String, String)> = result
+            .new_nodes
+            .iter()
+            .map(|n| (n.id.clone(), n.label.clone(), n.event_id.clone()))
+            .collect();
+        let mut labels: HashMap<&str, &str> = HashMap::new();
+        let mut node_events: HashMap<&str, &str> = HashMap::new();
+        for n in &snapshot.nodes {
+            labels.insert(n.id.as_str(), n.label.as_str());
+            node_events.insert(n.id.as_str(), n.event_id.as_str());
+        }
+        for (id, label, event_id) in &new_meta {
+            labels.insert(id.as_str(), label.as_str());
+            node_events.insert(id.as_str(), event_id.as_str());
+        }
         let before = result.new_edges.len();
         result.new_edges.retain(|edge| {
             // 3a. No self-referential edges
@@ -617,11 +634,7 @@ Use ONLY the exact node IDs given above. If nothing links, respond with {"new_no
             // 3d. Reasoning must not be a restatement of node labels
             let reasoning_lower = reasoning.to_lowercase();
             let find_label = |node_id: &str| -> String {
-                snapshot.nodes.iter()
-                    .find(|n| n.id == node_id)
-                    .map(|n| n.label.as_str())
-                    .unwrap_or("")
-                    .to_lowercase()
+                labels.get(node_id).copied().unwrap_or("").to_lowercase()
             };
             let src_lower = find_label(&edge.source_node_id);
             let tgt_lower = find_label(&edge.target_node_id);
@@ -647,16 +660,14 @@ Use ONLY the exact node IDs given above. If nothing links, respond with {"new_no
 
         // ── Gate 4: Provenance clamping ─────────────────────────────────────────
         for edge in &mut result.new_edges {
-            let same_event_source = snapshot.nodes.iter().any(|n| {
-                n.id == edge.source_node_id && valid_event_ids.contains(n.event_id.as_str())
-            });
-            let same_event_target = snapshot.nodes.iter().any(|n| {
-                n.id == edge.target_node_id && valid_event_ids.contains(n.event_id.as_str())
-            });
+            let src_event = node_events.get(edge.source_node_id.as_str());
+            let tgt_event = node_events.get(edge.target_node_id.as_str());
 
-            // Both endpoints in the current event → likely explicit
-            if same_event_source && same_event_target {
-                edge.provenance = EdgeProvenance::Extracted;
+            // Both endpoints from the same event of this batch → likely explicit
+            if let (Some(src), Some(tgt)) = (src_event, tgt_event) {
+                if src == tgt && valid_event_ids.contains(src) {
+                    edge.provenance = EdgeProvenance::Extracted;
+                }
             }
             // Very short reasoning → likely ambiguous
             if edge.reasoning.trim().len() < 20 {

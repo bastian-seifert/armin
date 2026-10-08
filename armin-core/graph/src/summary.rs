@@ -2,7 +2,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::debt::compute_debt;
 use crate::decisions::extract_decisions;
-use crate::risks::compute_risks;
+use crate::risks::compute_risks_from_debt;
 use crate::store::GraphStoreInner;
 use crate::types::{DebtDelta, DebtReport, ExecutiveSummary};
 use crate::utils::session_id_at_index;
@@ -14,7 +14,6 @@ pub fn compute_summary(
     prior_debt: Option<&DebtReport>,
 ) -> ExecutiveSummary {
     let decisions = extract_decisions(inner, current_session_idx);
-    let risks = compute_risks(inner, current_session_idx);
 
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -22,6 +21,7 @@ pub fn compute_summary(
         .as_secs_f64();
 
     let current_debt = compute_debt(inner, current_session_idx, now, None);
+    let risks = compute_risks_from_debt(inner, current_session_idx, &current_debt);
 
     let debt_delta = match prior_debt {
         Some(prior) => compute_debt_delta(&current_debt, prior),

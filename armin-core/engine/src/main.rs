@@ -27,6 +27,11 @@ use tracing::{info, warn};
 use state::{EngineConfig, ExtractionMode};
 use worker::run as run_worker;
 
+/// Max prose events waiting for extraction before ingest starts dropping.
+const INGEST_QUEUE_CAPACITY: usize = 2_000;
+/// How long shutdown waits for the worker to extract its pending batch.
+const WORKER_DRAIN_TIMEOUT: Duration = Duration::from_secs(20);
+
 /// Resolve the generative LLM extraction client (Anthropic/OpenAI provider),
 /// wiring the training-data recorder when configured.
 fn resolve_llm_extractor(args: &Args) -> Option<Arc<ExtractionClient>> {
@@ -164,8 +169,11 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Background extraction worker: prose events flow through this channel
-    // and are batched before hitting the extractor.
-    let (ingest_tx, ingest_rx) = mpsc::unbounded_channel::<armin_ingest::EventRecord>();
+    // and are batched before hitting the extractor. Bounded so a stalled
+    // extractor (rate limits, network) cannot grow memory without limit;
+    // ingest drops and counts events when it is full.
+    let (ingest_tx, ingest_rx) =
+        mpsc::channel::<armin_ingest::EventRecord>(INGEST_QUEUE_CAPACITY);
 
     let state = state::EngineState {
         graph: graph.clone(),
@@ -191,9 +199,17 @@ async fn main() -> anyhow::Result<()> {
         std::sync::atomic::Ordering::Relaxed,
     );
 
-    if extractor.is_some() || jev.is_some() {
-        tokio::spawn(run_worker(state.clone(), ingest_rx));
-    }
+    // The worker's copy of the state must not hold a sender: once the HTTP
+    // server (the only other holder) is gone the channel closes, and the
+    // worker extracts its pending batch and exits instead of losing it.
+    let worker = if extractor.is_some() || jev.is_some() {
+        let mut worker_state = state.clone();
+        worker_state.ingest_tx = None;
+        Some(tokio::spawn(run_worker(worker_state, ingest_rx)))
+    } else {
+        drop(ingest_rx);
+        None
+    };
 
     // Last-activity clock for --idle-exit: bumped by a middleware that wraps
     // every request, so any API call (ingest, brief, query, ...) counts.
@@ -253,8 +269,6 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/v1/config", post(routes::update_config))
         // No browser clients are expected: the engine is called server-side
         // by the harness (Bun). Deny all cross-origin requests.
-        // No browser clients are expected: the engine is called server-side
-        // by the harness (Bun). Deny all cross-origin requests.
         .layer(CorsLayer::new())
         .layer(middleware::from_fn_with_state(
             auth_token,
@@ -281,6 +295,14 @@ async fn main() -> anyhow::Result<()> {
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal(idle_rx))
         .await?;
+
+    // Let the worker extract whatever was still batched (bounded wait: an
+    // extraction call can take a while and shutdown must stay prompt).
+    if let Some(worker) = worker {
+        if tokio::time::timeout(WORKER_DRAIN_TIMEOUT, worker).await.is_err() {
+            warn!("Extraction worker did not finish within {WORKER_DRAIN_TIMEOUT:?}; pending events dropped");
+        }
+    }
 
     // Persist everything that is still in memory.
     graph.flush().await?;
