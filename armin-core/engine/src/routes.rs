@@ -51,7 +51,7 @@ pub async fn ingest(
     Json(events): Json<Vec<armin_ingest::EventRecord>>,
 ) -> Response {
     let mut queued = 0usize;
-    let captured = 0usize;
+    let mut dropped = 0usize;
     for event in events {
         state.metrics.events_ingested.fetch_add(1, Ordering::Relaxed);
         state.register_session(&event.session_id).await;
@@ -62,17 +62,35 @@ pub async fn ingest(
             let _ = crate::deterministic::is_tool_event(&event);
             crate::toolclass::record_tool_event(&state.scratch, &event).await;
         } else if let Some(tx) = &state.ingest_tx {
-            if tx.send(event).is_ok() {
-                queued += 1;
-                state
-                    .metrics
-                    .events_queued_for_llm
-                    .fetch_add(1, Ordering::Relaxed);
+            // Never block the caller: when the extractor falls behind and the
+            // bounded queue is full, drop the event instead of buffering
+            // without limit.
+            match tx.try_send(event) {
+                Ok(()) => {
+                    queued += 1;
+                    state
+                        .metrics
+                        .events_queued_for_llm
+                        .fetch_add(1, Ordering::Relaxed);
+                }
+                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                    dropped += 1;
+                    state.metrics.events_dropped.fetch_add(1, Ordering::Relaxed);
+                }
+                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {}
             }
         }
     }
-    Json(json!({ "status": "ok", "queued_for_llm": queued, "captured_deterministically": captured }))
-        .into_response()
+    if dropped > 0 {
+        warn!("Extraction queue full — dropped {dropped} prose event(s)");
+    }
+    Json(json!({
+        "status": "ok",
+        "queued_for_llm": queued,
+        "dropped": dropped,
+        "captured_deterministically": 0,
+    }))
+    .into_response()
 }
 
 /// Single-event ingest convenience endpoint.
@@ -302,17 +320,9 @@ pub async fn recent(
 ) -> impl IntoResponse {
     let node_count = params.nodes.unwrap_or(50);
     let edge_count = params.edges.unwrap_or(100);
-    let snap = state.graph.snapshot().await;
-    let nodes: Vec<_> = snap.nodes.into_iter().rev().take(node_count).collect();
-    let node_ids: std::collections::HashSet<String> = nodes.iter().map(|n| n.id.clone()).collect();
-    let edges: Vec<_> = snap
-        .edges
-        .into_iter()
-        .rev()
-        .take(edge_count)
-        .filter(|e| node_ids.contains(&e.source_node_id) || node_ids.contains(&e.target_node_id))
-        .collect();
-    Json(json!({ "nodes": nodes, "edges": edges }))
+    // Only the requested slice is cloned — not the whole graph.
+    let snap = state.graph.recent_touching(node_count, edge_count).await;
+    Json(json!({ "nodes": snap.nodes, "edges": snap.edges }))
 }
 
 // ── Graph mutations ──────────────────────────────────────────────────────────

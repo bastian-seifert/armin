@@ -46,6 +46,9 @@ impl DbBackend {
         let meta = db
             .open_tree(CF_META)
             .context("Failed to open meta tree")?;
+        if meta.get(KEY_SCHEMA_VERSION)?.is_none() {
+            meta.insert(KEY_SCHEMA_VERSION, &SCHEMA_VERSION.to_le_bytes())?;
+        }
         Ok(Self { db, nodes, edges, order, meta })
     }
 
@@ -74,9 +77,8 @@ impl DbBackend {
     /// Reads the per-index `order` tree (O(1) per insert on write side);
     /// falls back to the legacy single-blob format and migrates it in place.
     pub fn load_node_order(&self) -> Result<Vec<String>> {
-        let count = self.order.len();
-        if count > 0 {
-            let mut out = Vec::with_capacity(count);
+        if !self.order.is_empty() {
+            let mut out = Vec::new();
             for entry in self.order.iter() {
                 let (_, value) = entry?;
                 let id: String = deserialize(&value).context("Failed to deserialize node order entry")?;
@@ -102,20 +104,26 @@ impl DbBackend {
         Ok(legacy)
     }
 
-    /// Append a node ID to the insertion order log. O(1) — writes a single
-    /// per-index key instead of re-serializing the whole list.
+    /// Append a node ID to the insertion order log. Writes a single
+    /// per-index key instead of re-serializing the whole list. The next index
+    /// comes from the last key (O(log n)); `Tree::len()` would be a full scan.
     pub fn append_node_order(&self, node_id: &str) -> Result<()> {
-        let idx = self.order.len() as u64;
+        let idx = match self.order.last()? {
+            Some((key, _)) => {
+                let bytes: [u8; 8] = key
+                    .as_ref()
+                    .try_into()
+                    .context("Malformed node order key")?;
+                u64::from_be_bytes(bytes) + 1
+            }
+            None => 0,
+        };
         self.append_node_order_at(idx, node_id)
     }
 
     fn append_node_order_at(&self, idx: u64, node_id: &str) -> Result<()> {
         let key = idx.to_be_bytes();
         self.order.insert(key, serialize(node_id)?)?;
-        if self.meta.get(KEY_SCHEMA_VERSION)?.is_none() {
-            self.meta
-                .insert(KEY_SCHEMA_VERSION, &SCHEMA_VERSION.to_le_bytes())?;
-        }
         Ok(())
     }
 

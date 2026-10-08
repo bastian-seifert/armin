@@ -1,11 +1,11 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashSet, VecDeque};
 
 use petgraph::visit::EdgeRef;
 use petgraph::Direction;
 
 use crate::debt::compute_debt;
 use crate::store::GraphStoreInner;
-use crate::types::Risk;
+use crate::types::{DebtReport, Risk};
 use crate::utils::session_index;
 
 /// Compute risks from the current graph state.
@@ -22,11 +22,17 @@ pub fn compute_risks(
         .as_secs_f64();
 
     let debt = compute_debt(inner, current_session_idx, now, None);
+    compute_risks_from_debt(inner, current_session_idx, &debt)
+}
+
+/// Same as [`compute_risks`] but reuses an already computed debt report.
+pub fn compute_risks_from_debt(
+    inner: &GraphStoreInner,
+    current_session_idx: usize,
+    debt: &DebtReport,
+) -> Vec<Risk> {
     let mut seen_nodes = HashSet::new();
     let mut results = Vec::new();
-
-    // Precompute downstream counts for all nodes (cached)
-    let downstream_counts = compute_downstream_counts(inner);
 
     for item in &debt.items {
         for node_id in &item.node_ids {
@@ -38,8 +44,9 @@ pub fn compute_risks(
             };
             let node = &inner.graph[node_idx];
 
-            // Impact = downstream count (capped) x session recency
-            let downstream = *downstream_counts.get(node_id).unwrap_or(&0);
+            // Impact = downstream count (capped) x session recency.
+            // Only debt nodes need it — no BFS over the whole graph.
+            let downstream = bfs_downstream_count(inner, node_idx, 3);
             let recency_bonus = match session_index(&inner.session_order, &node.session_id) {
                 Some(si) if si >= current_session_idx.saturating_sub(1) => 20,
                 Some(_) => 5,
@@ -69,20 +76,6 @@ pub fn compute_risks(
     // Sort by impact descending
     results.sort_by(|a, b| b.impact_score.partial_cmp(&a.impact_score).unwrap_or(std::cmp::Ordering::Equal));
     results
-}
-
-/// Compute total downstream nodes (via any outgoing edge) for each node.
-fn compute_downstream_counts(inner: &GraphStoreInner) -> HashMap<String, usize> {
-    let mut counts = HashMap::new();
-    let all_nodes: Vec<_> = inner.graph.node_indices().collect();
-
-    for &idx in &all_nodes {
-        let id = inner.graph[idx].id.clone();
-        let count = bfs_downstream_count(inner, idx, 3);
-        counts.insert(id, count);
-    }
-
-    counts
 }
 
 fn bfs_downstream_count(

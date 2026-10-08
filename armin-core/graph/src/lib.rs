@@ -264,6 +264,86 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_persistent_order_survives_multiple_restarts() {
+        let dir = std::env::temp_dir().join(format!("armin_graph_order_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        {
+            let store = GraphStore::new_persistent(&dir).unwrap();
+            store.add_node(make_node("n1", NodeType::Decision, "s1")).await;
+            store.add_node(make_node("n2", NodeType::Decision, "s1")).await;
+            let _ = store.flush().await;
+        }
+        // Appends after a reopen must continue the order log, not overwrite it.
+        {
+            let store = GraphStore::new_persistent(&dir).unwrap();
+            store.add_node(make_node("n3", NodeType::Decision, "s2")).await;
+            let _ = store.flush().await;
+        }
+        {
+            let store = GraphStore::new_persistent(&dir).unwrap();
+            let ids: Vec<String> = store.last_n_nodes(10).await.into_iter().map(|n| n.id).collect();
+            assert_eq!(ids, vec!["n1", "n2", "n3"]);
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_register_session_continues_persisted_session_order() {
+        let dir = std::env::temp_dir().join(format!("armin_graph_sessions_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        {
+            let store = GraphStore::new_persistent(&dir).unwrap();
+            store.add_node(make_node("q1", NodeType::OpenItem, "s1")).await;
+            let _ = store.flush().await;
+        }
+        {
+            // A new session after a restart must index after the persisted
+            // ones, so the earlier open item is aged (High), not current.
+            let store = GraphStore::new_persistent(&dir).unwrap();
+            assert_eq!(store.register_session("s1").await, 0);
+            let idx = store.register_session("s2").await;
+            assert_eq!(idx, 1);
+            assert_eq!(store.register_session("s2").await, 1);
+            let report = store.compute_debt_report(idx).await;
+            let item = report
+                .items
+                .iter()
+                .find(|i| i.debt_type == "UnresolvedOpenItem")
+                .unwrap();
+            assert_eq!(item.severity, "High");
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_recent_touching_and_nodes_where() {
+        let store = GraphStore::new();
+        for i in 1..=4u32 {
+            store.add_node(make_node(&format!("n{i}"), NodeType::Decision, "s1")).await;
+        }
+        store.add_edge(make_edge("e1", EdgeType::RelatesTo, "n1", "n2")).await.unwrap();
+        store.add_edge(make_edge("e2", EdgeType::RelatesTo, "n3", "n4")).await.unwrap();
+
+        let snap = store.recent_touching(1, 10).await;
+        assert_eq!(snap.nodes.len(), 1);
+        assert_eq!(snap.nodes[0].id, "n4");
+        assert_eq!(snap.edges.len(), 1);
+        assert_eq!(snap.edges[0].id, "e2");
+
+        let picked = store.nodes_where(2, |n| n.id != "n1").await;
+        let ids: Vec<&str> = picked.iter().map(|n| n.id.as_str()).collect();
+        assert_eq!(ids, vec!["n2", "n3"]);
+
+        let sub = store.bfs_subgraph(&["n1".to_string()], 1).await;
+        assert_eq!(sub.nodes.len(), 2);
+        assert_eq!(sub.edges.len(), 1);
+    }
+
+    #[tokio::test]
     async fn test_persistent_empty_db() {
         let dir = std::env::temp_dir().join(format!("armin_graph_test_empty_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);

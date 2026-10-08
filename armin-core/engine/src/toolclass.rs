@@ -7,7 +7,7 @@
 //! `FailedVerification`, `RuleViolation`) and the brief's warnings section.
 //! Scratch dies with the engine process; only durable knowledge persists.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
 use armin_graph::{ScratchCheck, ScratchEdit, ScratchSnapshot};
@@ -16,6 +16,9 @@ use tokio::sync::RwLock;
 
 /// Maximum entries per scratch list per session (ring buffer).
 const MAX_ENTRIES: usize = 100;
+/// Maximum sessions whose scratch is kept; the least recently active one is
+/// evicted so a long-lived engine does not accumulate every session ever seen.
+const MAX_SESSIONS: usize = 16;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ToolClass {
@@ -140,13 +143,39 @@ pub fn check_passed(text: &str) -> bool {
 /// `Arc<Scratch>` (EngineState is Clone).
 #[derive(Default)]
 pub struct Scratch {
-    sessions: RwLock<HashMap<String, SessionScratch>>,
+    inner: RwLock<ScratchInner>,
+}
+
+#[derive(Default)]
+struct ScratchInner {
+    sessions: HashMap<String, SessionScratch>,
+    /// Session IDs, least recently active first.
+    lru: VecDeque<String>,
 }
 
 #[derive(Default)]
 struct SessionScratch {
-    edits: Vec<ScratchEdit>,
-    checks: Vec<ScratchCheck>,
+    edits: VecDeque<ScratchEdit>,
+    checks: VecDeque<ScratchCheck>,
+}
+
+impl ScratchInner {
+    /// The session's scratch, marked most recently active; evicts the least
+    /// recently active session beyond `MAX_SESSIONS`.
+    fn session_mut(&mut self, session: &str) -> &mut SessionScratch {
+        if self.lru.back().map(String::as_str) != Some(session) {
+            if let Some(pos) = self.lru.iter().position(|s| s == session) {
+                self.lru.remove(pos);
+            }
+            self.lru.push_back(session.to_string());
+            while self.lru.len() > MAX_SESSIONS {
+                if let Some(old) = self.lru.pop_front() {
+                    self.sessions.remove(&old);
+                }
+            }
+        }
+        self.sessions.entry(session.to_string()).or_default()
+    }
 }
 
 impl Scratch {
@@ -155,30 +184,30 @@ impl Scratch {
     }
 
     pub async fn record_edit(&self, session: &str, edit: ScratchEdit) {
-        let mut sessions = self.sessions.write().await;
-        let s = sessions.entry(session.to_string()).or_default();
-        s.edits.push(edit);
+        let mut inner = self.inner.write().await;
+        let s = inner.session_mut(session);
+        s.edits.push_back(edit);
         if s.edits.len() > MAX_ENTRIES {
-            s.edits.remove(0);
+            s.edits.pop_front();
         }
     }
 
     pub async fn record_check(&self, session: &str, check: ScratchCheck) {
-        let mut sessions = self.sessions.write().await;
-        let s = sessions.entry(session.to_string()).or_default();
-        s.checks.push(check);
+        let mut inner = self.inner.write().await;
+        let s = inner.session_mut(session);
+        s.checks.push_back(check);
         if s.checks.len() > MAX_ENTRIES {
-            s.checks.remove(0);
+            s.checks.pop_front();
         }
     }
 
     /// Snapshot for the debt detectors (clone of the ring buffers).
     pub async fn snapshot(&self, session: &str) -> ScratchSnapshot {
-        let sessions = self.sessions.read().await;
-        match sessions.get(session) {
+        let inner = self.inner.read().await;
+        match inner.sessions.get(session) {
             Some(s) => ScratchSnapshot {
-                edits: s.edits.clone(),
-                checks: s.checks.clone(),
+                edits: s.edits.iter().cloned().collect(),
+                checks: s.checks.iter().cloned().collect(),
             },
             None => ScratchSnapshot::default(),
         }
@@ -270,5 +299,17 @@ mod tests {
         assert_eq!(snap.edits.len(), 1);
         assert_eq!(snap.checks.len(), 1);
         assert!(snap.checks[0].passed);
+    }
+
+    #[tokio::test]
+    async fn scratch_evicts_least_recent_session() {
+        let scratch = Scratch::new();
+        for i in 0..=MAX_SESSIONS {
+            let mut ev = tool_event("edit", "edited file");
+            ev.session_id = format!("s{i}");
+            record_tool_event(&scratch, &ev).await;
+        }
+        assert!(scratch.snapshot("s0").await.edits.is_empty(), "oldest evicted");
+        assert_eq!(scratch.snapshot(&format!("s{MAX_SESSIONS}")).await.edits.len(), 1);
     }
 }

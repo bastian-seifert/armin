@@ -5,7 +5,7 @@ use std::sync::Arc;
 use armin_extraction::{ExtractionClient, JevClient, JevNativeConfig};
 use armin_graph::{GraphStore, NodeRetriever};
 use armin_ingest::EventRecord;
-use tokio::sync::{RwLock, mpsc::UnboundedSender};
+use tokio::sync::{RwLock, mpsc::Sender};
 
 use crate::metrics::Metrics;
 
@@ -123,8 +123,9 @@ pub struct EngineState {
     pub extractor: Option<Arc<ExtractionClient>>,
     /// Jev (System One) client for `Jev` extraction mode; None otherwise.
     pub jev: Option<Arc<JevClient>>,
-    /// Sender into the background extraction worker. None when no extractor.
-    pub ingest_tx: Option<UnboundedSender<EventRecord>>,
+    /// Sender into the background extraction worker (bounded, see
+    /// `INGEST_QUEUE_CAPACITY`). None when no extractor.
+    pub ingest_tx: Option<Sender<EventRecord>>,
     /// Per-session scratch: recent tool mutations + verification outcomes.
     /// In-memory only; feeds cross-layer debt and the brief warnings.
     pub scratch: Arc<crate::toolclass::Scratch>,
@@ -154,17 +155,26 @@ pub struct ConfigUpdate {
 impl EngineState {
     /// Track a session and set it as the current one (drives recency
     /// weighting in debt/risk scoring). Returns the session index.
+    ///
+    /// The index comes from the graph's own session order — the list the
+    /// debt/risk/summary scorers compare node sessions against. A separate
+    /// engine-local list would restart at 0 after every engine restart while
+    /// the persisted graph still knows the earlier sessions, making old open
+    /// items look like they belong to the current session.
     pub async fn register_session(&self, session_id: &str) -> usize {
-        let idx = {
+        {
             let mut sessions = self.sessions.write().await;
-            if !sessions.contains(&session_id.to_string()) {
+            if !sessions.iter().any(|s| s == session_id) {
                 sessions.push(session_id.to_string());
             }
-            sessions.len().saturating_sub(1)
-        };
+        }
+        let idx = self.graph.register_session(session_id).await;
         self.current_session_idx
             .store(idx, std::sync::atomic::Ordering::SeqCst);
-        *self.current_session_id.write().await = session_id.to_string();
+        let mut current = self.current_session_id.write().await;
+        if *current != session_id {
+            *current = session_id.to_string();
+        }
         idx
     }
 

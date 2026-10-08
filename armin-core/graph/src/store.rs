@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, Result};
+use petgraph::visit::EdgeRef;
 use petgraph::Direction;
 use petgraph::stable_graph::{EdgeIndex, NodeIndex, StableDiGraph};
 use tokio::sync::RwLock;
@@ -106,13 +107,21 @@ impl GraphStore {
         }
 
         for edge in &edges {
-            let src = id_to_node
-                .get(&edge.source_node_id)
-                .ok_or_else(|| anyhow!("Persisted edge {} references missing source node {}", edge.id, edge.source_node_id))?;
-            let tgt = id_to_node
-                .get(&edge.target_node_id)
-                .ok_or_else(|| anyhow!("Persisted edge {} references missing target node {}", edge.id, edge.target_node_id))?;
-            let idx = graph.add_edge(*src, *tgt, edge.clone());
+            // A dangling edge (e.g. a partially flushed write before a crash)
+            // must not make the whole database unloadable: skip it.
+            let (Some(&src), Some(&tgt)) = (
+                id_to_node.get(&edge.source_node_id),
+                id_to_node.get(&edge.target_node_id),
+            ) else {
+                tracing::warn!(
+                    "Skipping persisted edge {} with missing endpoint ({} -> {})",
+                    edge.id,
+                    edge.source_node_id,
+                    edge.target_node_id
+                );
+                continue;
+            };
+            let idx = graph.add_edge(src, tgt, edge.clone());
             id_to_edge.insert(edge.id.clone(), idx);
         }
 
@@ -272,6 +281,76 @@ impl GraphStore {
         Ok(edge)
     }
 
+    /// Track a session in the graph's insertion-ordered session list and
+    /// return its index. Debt/risk/summary scoring compares node session
+    /// indices against this list, so callers must take the current session
+    /// index from here rather than from a separately maintained list.
+    pub async fn register_session(&self, session_id: &str) -> usize {
+        // Fast path under the read lock: called for every ingested event.
+        if let Some(i) = self
+            .inner
+            .read()
+            .await
+            .session_order
+            .iter()
+            .position(|s| s == session_id)
+        {
+            return i;
+        }
+        let mut inner = self.inner.write().await;
+        match inner.session_order.iter().position(|s| s == session_id) {
+            Some(i) => i,
+            None => {
+                inner.session_order.push(session_id.to_string());
+                inner.session_order.len() - 1
+            }
+        }
+    }
+
+    /// Clone only the nodes matching `pred`, in insertion order, up to
+    /// `limit` — avoids cloning the whole graph when a caller needs a few.
+    pub async fn nodes_where<F>(&self, limit: usize, pred: F) -> Vec<ArgumentNode>
+    where
+        F: Fn(&ArgumentNode) -> bool,
+    {
+        let inner = self.inner.read().await;
+        inner
+            .node_order
+            .iter()
+            .filter_map(|id| inner.id_to_node.get(id).map(|&idx| &inner.graph[idx]))
+            .filter(|n| pred(n))
+            .take(limit)
+            .cloned()
+            .collect()
+    }
+
+    /// The `node_count` most recent nodes (newest first) plus up to
+    /// `edge_count` of the newest edges touching any of them (either end).
+    pub async fn recent_touching(&self, node_count: usize, edge_count: usize) -> GraphSnapshot {
+        let inner = self.inner.read().await;
+        let nodes: Vec<ArgumentNode> = inner
+            .node_order
+            .iter()
+            .rev()
+            .take(node_count)
+            .filter_map(|id| inner.id_to_node.get(id).map(|&idx| inner.graph[idx].clone()))
+            .collect();
+        let node_ids: HashSet<&str> = nodes.iter().map(|n| n.id.as_str()).collect();
+        let mut edge_indices: Vec<EdgeIndex<GraphIx>> = inner.graph.edge_indices().collect();
+        edge_indices.reverse();
+        let edges: Vec<ArgumentEdge> = edge_indices
+            .into_iter()
+            .map(|i| &inner.graph[i])
+            .filter(|e| {
+                node_ids.contains(e.source_node_id.as_str())
+                    || node_ids.contains(e.target_node_id.as_str())
+            })
+            .take(edge_count)
+            .cloned()
+            .collect();
+        GraphSnapshot { nodes, edges }
+    }
+
     pub async fn snapshot(&self) -> GraphSnapshot {
         let inner = self.inner.read().await;
         let nodes: Vec<ArgumentNode> = inner
@@ -423,16 +502,13 @@ impl GraphStore {
             .iter()
             .map(|&i| inner.graph[i].clone())
             .collect();
-        let node_ids: std::collections::HashSet<&str> =
-            nodes.iter().map(|n| n.id.as_str()).collect();
-        let edges: Vec<ArgumentEdge> = inner
-            .graph
-            .edge_indices()
-            .map(|i| inner.graph[i].clone())
-            .filter(|e| {
-                node_ids.contains(e.source_node_id.as_str())
-                    && node_ids.contains(e.target_node_id.as_str())
-            })
+        // Induced edges: walk only the visited nodes' outgoing edges instead
+        // of scanning every edge in the graph.
+        let edges: Vec<ArgumentEdge> = visited_nodes
+            .iter()
+            .flat_map(|&i| inner.graph.edges_directed(i, Direction::Outgoing))
+            .filter(|e| visited_nodes.contains(&e.target()))
+            .map(|e| e.weight().clone())
             .collect();
 
         GraphSnapshot { nodes, edges }
@@ -605,7 +681,9 @@ impl GraphStore {
         node_scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
         // Build reverse adjacency: target -> [(source, edge)] for tracing backwards
-        let node_ids: HashSet<&str> = subgraph.nodes.iter().map(|n| n.id.as_str()).collect();
+        let nodes_by_id: HashMap<&str, &ArgumentNode> =
+            subgraph.nodes.iter().map(|n| (n.id.as_str(), n)).collect();
+        let node_ids: HashSet<&str> = nodes_by_id.keys().copied().collect();
         let mut reverse_adj: HashMap<&str, Vec<(&str, &ArgumentEdge)>> = HashMap::new();
         for edge in &subgraph.edges {
             if node_ids.contains(edge.source_node_id.as_str())
@@ -659,7 +737,7 @@ impl GraphStore {
                         sorted.sort_by_key(|(_, edge)| edge.edge_type.preference_order());
                         for (neighbor_id, edge) in sorted {
                             if !visited.contains(neighbor_id) {
-                                if let Some(node) = subgraph.nodes.iter().find(|n| n.id == neighbor_id) {
+                                if let Some(&node) = nodes_by_id.get(neighbor_id) {
                                     stack.push((node, Some(edge)));
                                 }
                             }

@@ -67,12 +67,13 @@ pub async fn build_brief(state: &EngineState, active_files: &[String]) -> String
 
     // Rules — binding constraints, always worth surfacing (they are few:
     // imported or recorded, never prose-extracted).
-    let rules: Vec<armin_graph::ArgumentNode> = snapshot_nodes(state)
-        .await
-        .into_iter()
-        .filter(|n| n.node_type == armin_graph::NodeType::Rule)
-        .take(MAX_ITEMS)
-        .collect();
+    // Clone only the matching nodes (this runs on every agent turn).
+    let rules: Vec<armin_graph::ArgumentNode> = state
+        .graph
+        .nodes_where(MAX_ITEMS, |n| {
+            n.node_type == armin_graph::NodeType::Rule && n.status == armin_graph::NodeStatus::Active
+        })
+        .await;
     if !rules.is_empty() {
         let lines: Vec<String> = rules
             .iter()
@@ -104,18 +105,18 @@ pub async fn build_brief(state: &EngineState, active_files: &[String]) -> String
     // working on right now (nodes with file scope that intersect the
     // request). Project-wide nodes (no files) live in the sections above.
     if !active_files.is_empty() {
-        let snapshot = state.graph.snapshot().await;
-        let mut binding: Vec<&armin_graph::ArgumentNode> = snapshot
-            .nodes
-            .iter()
-            .filter(|n| {
+        let binding_nodes = state
+            .graph
+            .nodes_where(usize::MAX, |n| {
                 !n.files.is_empty()
+                    && n.status == armin_graph::NodeStatus::Active
                     && matches!(n.node_type, armin_graph::NodeType::Rule | armin_graph::NodeType::Decision)
                     && n.files.iter().any(|f| {
                         active_files.iter().any(|a| a == f || f.ends_with(a) || a.ends_with(f))
                     })
             })
-            .collect();
+            .await;
+        let mut binding: Vec<&armin_graph::ArgumentNode> = binding_nodes.iter().collect();
         binding.sort_by_key(|n| match n.node_type {
             armin_graph::NodeType::Rule => 0,
             _ => 1,
@@ -186,10 +187,6 @@ pub async fn build_brief(state: &EngineState, active_files: &[String]) -> String
         "<reasoning-state nodes=\"{node_count}\" edges=\"{edges}\">\n{}\n</reasoning-state>",
         sections.join("\n")
     )
-}
-
-async fn snapshot_nodes(state: &EngineState) -> Vec<armin_graph::ArgumentNode> {
-    state.graph.snapshot().await.nodes
 }
 
 fn truncate(s: &str, max: usize) -> String {
